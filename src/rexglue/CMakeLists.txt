@@ -23,8 +23,6 @@ target_include_directories(rexglue
 target_link_libraries(rexglue
     PRIVATE
         rexcodegen
-        rexfilesystem
-        rexruntime
 )
 
 if(ANDROID)
@@ -46,8 +44,6 @@ if(ANDROID)
     )
     target_link_libraries(rexglue_jni PRIVATE
         rexcodegen
-        rexfilesystem
-        rexruntime
         android
         log
     )
