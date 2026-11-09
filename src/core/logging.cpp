@@ -30,6 +30,10 @@
 #include <rex/platform.h>
 #include <rex/platform/env.h>
 
+#if REX_PLATFORM_ANDROID
+#include <android/log.h>
+#endif
+
 #if REX_PLATFORM_WIN32
 #include <spdlog/sinks/msvc_sink.h>
 #else

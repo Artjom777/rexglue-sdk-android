@@ -119,27 +119,17 @@ bool ReXApp::SetupEnvironment() {
   }
 
 #if REX_PLATFORM_ANDROID
+  auto exe_dir = rex::filesystem::GetExecutableFolder();
   std::filesystem::path user_dir;
   std::string user_data_cvar = REXCVAR_GET(user_data_root);
   if (!user_data_cvar.empty()) {
     user_dir = user_data_cvar;
   } else {
-    const char* ext = SDL_GetAndroidExternalStoragePath();
-    if (ext && ext[0]) {
-      user_dir = std::filesystem::path(ext) / GetName();
-    } else {
-      const char* in = SDL_GetAndroidInternalStoragePath();
-      if (in && in[0]) {
-        user_dir = std::filesystem::path(in) / GetName();
-      } else {
-        user_dir = std::filesystem::path("/storage/emulated/0/Download") / GetName();
-      }
-    }
+    user_dir = exe_dir / GetName();
   }
-  std::filesystem::path exe_dir = user_dir;
   std::error_code ec;
   std::filesystem::create_directories(user_dir, ec);
-  std::filesystem::create_directories(user_dir / "logs", ec);
+  std::filesystem::create_directories(exe_dir / "logs", ec);
 #else
   auto exe_dir = rex::filesystem::GetExecutableFolder();
 

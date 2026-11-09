@@ -992,9 +992,6 @@ public class MainActivity extends Activity {
                 } catch (Throwable ignored) {}
             }
 
-            // Embed assets/rexglue.cfg and assets/args.txt into the APK directly
-            injectAssetsIntoApk(destApk, cfgContent.toString(), argsContent.toString());
-
             // Also keep a copy in app's internal apks directory
             try {
                 File appApk = new File(getExternalFilesDir("apks"), destApk.getName());
@@ -1024,55 +1021,6 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             appendLog("[ERROR] Ошибка сборки APK: " + e.getMessage());
             return false;
-        }
-    }
-
-    private void injectAssetsIntoApk(File apkFile, String cfgContent, String argsContent) {
-        if (apkFile == null || !apkFile.exists()) return;
-        File tempApk = new File(apkFile.getParentFile(), apkFile.getName() + ".tmp");
-        try (java.util.zip.ZipFile zipIn = new java.util.zip.ZipFile(apkFile);
-             java.util.zip.ZipOutputStream zipOut = new java.util.zip.ZipOutputStream(new FileOutputStream(tempApk))) {
-            
-            java.util.Enumeration<? extends java.util.zip.ZipEntry> entries = zipIn.entries();
-            while (entries.hasMoreElements()) {
-                java.util.zip.ZipEntry entry = entries.nextElement();
-                String name = entry.getName();
-                if (name.equals("assets/rexglue.cfg") || name.equals("assets/args.txt")) {
-                    continue;
-                }
-                java.util.zip.ZipEntry newEntry = new java.util.zip.ZipEntry(name);
-                zipOut.putNextEntry(newEntry);
-                try (InputStream is = zipIn.getInputStream(entry)) {
-                    byte[] buf = new byte[32768];
-                    int n;
-                    while ((n = is.read(buf)) != -1) {
-                        zipOut.write(buf, 0, n);
-                    }
-                }
-                zipOut.closeEntry();
-            }
-
-            // Inject assets/rexglue.cfg
-            java.util.zip.ZipEntry cfgEntry = new java.util.zip.ZipEntry("assets/rexglue.cfg");
-            zipOut.putNextEntry(cfgEntry);
-            zipOut.write(cfgContent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            zipOut.closeEntry();
-
-            // Inject assets/args.txt
-            java.util.zip.ZipEntry argsEntry = new java.util.zip.ZipEntry("assets/args.txt");
-            zipOut.putNextEntry(argsEntry);
-            zipOut.write(argsContent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            zipOut.closeEntry();
-        } catch (Exception e) {
-            appendLog("[WARN] Встраивание конфига в APK пропущено: " + e.getMessage());
-            if (tempApk.exists()) tempApk.delete();
-            return;
-        }
-
-        if (tempApk.exists() && tempApk.length() > 0) {
-            apkFile.delete();
-            tempApk.renameTo(apkFile);
-            appendLog("[BUILD] Конфигурация успешно встроена в assets APK");
         }
     }
 

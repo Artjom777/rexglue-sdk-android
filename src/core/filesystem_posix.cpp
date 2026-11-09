@@ -24,10 +24,6 @@
 #include <mach-o/dyld.h>
 #endif
 
-#if REX_PLATFORM_ANDROID
-#include <SDL3/SDL_system.h>
-#endif
-
 #include <rex/assert.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
@@ -103,17 +99,51 @@ std::filesystem::path GetExecutablePath() {
 #endif
 }
 
-std::filesystem::path GetExecutableFolder() {
 #if REX_PLATFORM_ANDROID
-  const char* ext = SDL_GetAndroidExternalStoragePath();
-  if (ext && ext[0]) {
-    return std::filesystem::path(ext);
+static std::filesystem::path GetAndroidStoragePath() {
+  if (const char* env_dir = std::getenv("REXGLUE_DATA_DIR")) {
+    if (env_dir[0]) return std::filesystem::path(env_dir);
   }
-  const char* internal = SDL_GetAndroidInternalStoragePath();
-  if (internal && internal[0]) {
-    return std::filesystem::path(internal);
+  std::string cmd;
+  FILE* f = fopen("/proc/self/cmdline", "r");
+  if (f) {
+    char buf[256] = {};
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n > 0) {
+      buf[n] = '\0';
+      cmd = buf;
+    }
+  }
+  if (!cmd.empty() && cmd.find('.') != std::string::npos && !cmd.starts_with("/")) {
+    std::filesystem::path ext_p = std::filesystem::path("/storage/emulated/0/Android/data") / cmd / "files";
+    std::error_code ec;
+    std::filesystem::create_directories(ext_p, ec);
+    if (!ec && std::filesystem::exists(ext_p, ec)) {
+      return ext_p;
+    }
+    std::filesystem::path int_p = std::filesystem::path("/data/data") / cmd / "files";
+    std::filesystem::create_directories(int_p, ec);
+    if (!ec && std::filesystem::exists(int_p, ec)) {
+      return int_p;
+    }
+    return ext_p;
+  }
+  char buff[FILENAME_MAX] = "";
+  if (readlink("/proc/self/exe", buff, FILENAME_MAX) > 0) {
+    std::filesystem::path p(buff);
+    auto parent = p.parent_path();
+    if (parent != "/system/bin" && !parent.empty()) {
+      return parent;
+    }
   }
   return std::filesystem::path("/storage/emulated/0/Download");
+}
+#endif
+
+std::filesystem::path GetExecutableFolder() {
+#if REX_PLATFORM_ANDROID
+  return GetAndroidStoragePath();
 #else
   return GetExecutablePath().parent_path();
 #endif
@@ -121,15 +151,7 @@ std::filesystem::path GetExecutableFolder() {
 
 std::filesystem::path GetUserFolder() {
 #if REX_PLATFORM_ANDROID
-  const char* ext = SDL_GetAndroidExternalStoragePath();
-  if (ext && ext[0]) {
-    return std::filesystem::path(ext);
-  }
-  const char* internal = SDL_GetAndroidInternalStoragePath();
-  if (internal && internal[0]) {
-    return std::filesystem::path(internal);
-  }
-  return std::filesystem::path("/storage/emulated/0/Download");
+  return GetAndroidStoragePath();
 #else
   // get preferred data home
   if (auto xdg = rex::platform::env::get("XDG_DATA_HOME")) {
