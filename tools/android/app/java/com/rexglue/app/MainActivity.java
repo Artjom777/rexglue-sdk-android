@@ -933,6 +933,8 @@ public class MainActivity extends Activity {
             cfgContent.append("# ReXGlue Port Configuration for ").append(projectName).append("\n");
             cfgContent.append("project=").append(projectName).append("\n");
             cfgContent.append("mode=").append(mode == 2 ? "standalone" : "iso").append("\n");
+            cfgContent.append("gpu_plugin=xenos\n");
+            cfgContent.append("--gpu_plugin=xenos\n");
             for (int i = 0; i < isoList.size(); i++) {
                 cfgContent.append("iso_").append(i).append("=").append(isoList.get(i)).append("\n");
             }
@@ -953,6 +955,7 @@ public class MainActivity extends Activity {
             }
 
             StringBuilder argsContent = new StringBuilder();
+            argsContent.append("--gpu_plugin=xenos\n");
             if (isoList.size() > 0) {
                 argsContent.append("--game_data_root=").append(isoList.get(0)).append("\n");
             }

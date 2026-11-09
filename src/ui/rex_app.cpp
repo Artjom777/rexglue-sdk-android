@@ -55,10 +55,17 @@
 REXCVAR_DEFINE_BOOL(window_presenter, true, "UI",
                     "Attach the emulated GPU's presenter to the window (off when the title presents "
                     "to the window with its own renderer)");
+#if REX_PLATFORM_ANDROID
+REXCVAR_DEFINE_STRING(gpu_plugin, "xenos", "GPU",
+                      "GPU emulation plugin to load at startup (e.g. 'xenos'); empty disables "
+                      "GPU emulation")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+#else
 REXCVAR_DEFINE_STRING(gpu_plugin, "", "GPU",
                       "GPU emulation plugin to load at startup (e.g. 'xenos'); empty disables "
                       "GPU emulation")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+#endif
 
 namespace rex {
 
@@ -517,6 +524,19 @@ void ReXApp::LaunchModule() {
     if (!main_thread) {
       REXLOG_ERROR("Failed to launch module");
       app_context().QuitFromUIThread();
+      return;
+    }
+
+    // Verify if the recompiled function is available for entrypoint
+    auto exec_mod = runtime_->kernel_state()->GetExecutableModule();
+    uint32_t entry_addr = exec_mod ? exec_mod->entry_point() : 0;
+    if (entry_addr != 0 && runtime_->function_dispatcher() &&
+        runtime_->function_dispatcher()->GetFunction(entry_addr) == nullptr) {
+      REXLOG_WARN("==================================================================");
+      REXLOG_WARN("ReXGlue Runner: Entrypoint 0x{:08X} has no recompiled function.", entry_addr);
+      REXLOG_WARN("Xbox 360 title mounted successfully and GPU presenter is active.");
+      REXLOG_WARN("Game runner window and controls will stay open.");
+      REXLOG_WARN("==================================================================");
       return;
     }
 

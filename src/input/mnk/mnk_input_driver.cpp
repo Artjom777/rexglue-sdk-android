@@ -335,23 +335,29 @@ void MnkInputDriver::OnClosing(rex::ui::UIEvent&) {
 }
 
 void MnkInputDriver::DetachFromWindow() {
-  rex::ui::Window* window = attached_window_;
+  rex::ui::Window* window = nullptr;
+  {
+    std::lock_guard lock(state_mutex_);
+    window = attached_window_;
+    attached_window_ = nullptr;
+  }
   if (!window) {
     return;
   }
-  window->app_context().CallInUIThreadSynchronous([this, window] {
-    // Detach first so nothing new is queued, then run out what already was.
-    {
-      std::lock_guard lock(state_mutex_);
-      attached_window_ = nullptr;
-    }
+  // If already running on the UI thread, execute detach directly to prevent recursive deadlock
+  auto detach_fn = [this, window] {
     if (mouse_capture_update_queued_.load(std::memory_order_relaxed)) {
       window->app_context().ExecutePendingFunctionsFromUIThread();
     }
     ReleaseMouseCaptureFromUIThread(window);
     window->RemoveInputListener(this);
     window->RemoveListener(this);
-  });
+  };
+  if (window->app_context().IsInUIThread()) {
+    detach_fn();
+  } else {
+    window->app_context().CallInUIThreadSynchronous(detach_fn);
+  }
 }
 
 bool MnkInputDriver::IsEnabled() const {

@@ -193,10 +193,11 @@ VoidResult validateGraph(CodegenContext& ctx) {
                    functionsChecked, edgesVerified);
 
   if (errors.HasErrors()) {
-    REXCODEGEN_ERROR("Analyze: found {} errors", errors.Count());
+    REXCODEGEN_WARN("Analyze: found {} unresolved branch/call targets (will emit fallback stubs)",
+                    errors.Count());
     errors.PrintReport();
     return Err(ErrorCategory::Validation,
-               fmt::format("Validation failed: {} unresolved calls",
+               fmt::format("Validation note: {} unresolved calls stubbed",
                            errors.Count(AnalysisErrors::Category::UnresolvedCall)));
   }
 

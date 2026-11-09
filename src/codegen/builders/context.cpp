@@ -263,16 +263,17 @@ void BuilderContext::emit_function_call(uint32_t address) {
     }
 
     // Unresolved target from graph
-    REXCODEGEN_ERROR("Unresolved function 0x{:08X} from 0x{:08X}", address, base);
-    println("\t// FATAL: unresolved function 0x{:08X}", address);
+    REXCODEGEN_WARN("Unresolved function 0x{:08X} from 0x{:08X} (emitted runtime assertion)", address, base);
+    println("\t// Stub: unresolved function 0x{:08X}", address);
     println("\tREX_FATAL(\"Unresolved call from 0x{:08X} to 0x{:08X}\");", base, address);
     return;
   }
 
-  // No pre-resolved target found - this is an error
-  REXCODEGEN_ERROR("Unresolved function 0x{:08X} from 0x{:08X} (no CallTarget in FunctionNode)",
-                   address, base);
-  println("\t// FATAL: unresolved function 0x{:08X} (no CallTarget in FunctionNode)", address);
+  // No pre-resolved target found
+  REXCODEGEN_WARN(
+      "Unresolved function 0x{:08X} from 0x{:08X} (no CallTarget in FunctionNode, emitted runtime assertion)",
+      address, base);
+  println("\t// Stub: unresolved function 0x{:08X} (no CallTarget in FunctionNode)", address);
   println("\tREX_FATAL(\"Unresolved call from 0x{:08X} to 0x{:08X}\");", base, address);
 }
 

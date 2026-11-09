@@ -627,6 +627,8 @@ static jint RunCodegenMultiInternal(
     std::ofstream cfg(std::filesystem::path(out_dir) / "rexglue.cfg");
     cfg << "mode=" << (mode == 2 ? "standalone" : "iso") << "\n";
     cfg << "project=" << project_name << "\n";
+    cfg << "gpu_plugin=xenos\n";
+    cfg << "--gpu_plugin=xenos\n";
     cfg << "iso_count=" << iso_paths.size() << "\n";
     for (size_t i = 0; i < iso_paths.size(); ++i) {
       cfg << "iso_" << i << "=" << iso_paths[i] << "\n";
@@ -638,6 +640,7 @@ static jint RunCodegenMultiInternal(
 
     // Write args.txt
     std::ofstream args_file(std::filesystem::path(out_dir) / "args.txt");
+    args_file << "--gpu_plugin=xenos\n";
     if (mode == 2) {
       args_file << "--game_data_root=" << game_data_dir.string() << "\n";
       if (!update_path.empty()) {

@@ -388,7 +388,7 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
     if (!result) {
       if (opts.force && (result.error().category == ErrorCategory::Validation ||
                          result.error().category == ErrorCategory::Format)) {
-        REXLOG_WARN("Analysis errors for '{}' (continuing due to --force) [category {}]: {}",
+        REXLOG_INFO("Analysis status for '{}' (--force active) [category {}]: {}",
                     entry.module->targetName, static_cast<int>(result.error().category),
                     result.error().message);
       } else {

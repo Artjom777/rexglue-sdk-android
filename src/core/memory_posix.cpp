@@ -281,11 +281,8 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
   if (errno == EEXIST && base_address &&
       (allocation_type == AllocationType::kCommit ||
        allocation_type == AllocationType::kReserveCommit)) {
-    // Verify the entire range is mapped before using mprotect
-    if (IsRangeFullyMapped(base_address, length)) {
-      if (mprotect(base_address, length, static_cast<int>(prot_requested)) == 0) {
-        return base_address;
-      }
+    if (mprotect(base_address, length, static_cast<int>(prot_requested)) == 0) {
+      return base_address;
     }
   }
 #endif
@@ -420,15 +417,51 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
 FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, size_t length,
                                           PageAccess access, bool commit) {
 #if REX_PLATFORM_ANDROID
-  // memfd (API 30+, the minimum this port targets): anonymous, sparse until written, like the
-  // /dev/shm file on Linux. Grows with ftruncate; nothing to unlink.
+  // On Android, anonymous memfd is tracked entirely in tmpfs/shmem (kernel RAM).
+  // Calling ftruncate with 4.5 GB immediately pressures kernel memory accounting,
+  // triggering OOM / watchdog shutdown on mobile SoCs (MediaTek Dimensity / Qualcomm).
+  // Instead, create an unlinked sparse backing file in the app cache or /data/local/tmp.
+  // The unlinked descriptor provides safe sparse backing without consuming RAM until written.
   (void)access;
   (void)commit;
-  int fd = memfd_create(path.filename().c_str(), MFD_CLOEXEC);
+  int fd = -1;
+  const char* env_dir = std::getenv("REXGLUE_DATA_DIR");
+  std::filesystem::path backing_dir;
+  if (env_dir && env_dir[0] && std::filesystem::exists(env_dir)) {
+    backing_dir = env_dir;
+  } else {
+    FILE* f = fopen("/proc/self/cmdline", "r");
+    if (f) {
+      char buf[256] = {};
+      size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+      fclose(f);
+      if (n > 0) {
+        buf[n] = '\0';
+        std::string cmd = buf;
+        std::filesystem::path p = std::filesystem::path("/data/data") / cmd / "cache";
+        std::error_code ec;
+        if (std::filesystem::exists(p, ec)) {
+          backing_dir = p;
+        }
+      }
+    }
+    if (backing_dir.empty()) {
+      backing_dir = "/data/local/tmp";
+    }
+  }
+
+  std::filesystem::path backing = backing_dir / path.filename();
+  fd = open(backing.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0600);
+  if (fd >= 0) {
+    unlink(backing.c_str());
+  } else {
+    // Fall back to memfd
+    fd = memfd_create(path.filename().c_str(), MFD_CLOEXEC);
+  }
   if (fd < 0) {
     return kFileMappingHandleInvalid;
   }
-  if (ftruncate64(fd, static_cast<off64_t>(length)) != 0) {
+  if (rex_ftruncate64(fd, static_cast<off64_t>(length)) != 0) {
     close(fd);
     return kFileMappingHandleInvalid;
   }

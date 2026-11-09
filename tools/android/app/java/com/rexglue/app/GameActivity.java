@@ -100,6 +100,9 @@ public class GameActivity extends SDLActivity {
                     } else if (line.startsWith("update_path=")) {
                         String v = "--update_data_root=" + line.substring("update_path=".length()).trim();
                         if (!args.contains(v)) args.add(v);
+                    } else if (line.startsWith("gpu_plugin=")) {
+                        String v = "--gpu_plugin=" + line.substring("gpu_plugin=".length()).trim();
+                        if (!args.contains(v)) args.add(v);
                     }
                 }
             } catch (Exception ignored) {}
@@ -157,6 +160,9 @@ public class GameActivity extends SDLActivity {
                             if (!args.contains(v)) args.add(v);
                         } else if (line.startsWith("update_path=")) {
                             String v = "--update_data_root=" + line.substring("update_path=".length()).trim();
+                            if (!args.contains(v)) args.add(v);
+                        } else if (line.startsWith("gpu_plugin=")) {
+                            String v = "--gpu_plugin=" + line.substring("gpu_plugin=".length()).trim();
                             if (!args.contains(v)) args.add(v);
                         }
                     }

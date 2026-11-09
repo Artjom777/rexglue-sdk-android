@@ -512,11 +512,13 @@ std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode) {
       }
     }
 
-    // MnK driver (keyboard/mouse -> controller emulation)
+#if !REX_PLATFORM_ANDROID
+    // MnK driver (keyboard/mouse -> controller emulation, desktop only)
     auto mnk_driver = std::make_unique<mnk::MnkInputDriver>(nullptr, 0);
     if (mnk_driver->Setup() == X_STATUS_SUCCESS) {
       input->AddDriver(std::move(mnk_driver));
     }
+#endif
   }
 
   // NOP driver (primary in tool mode, fallback otherwise)

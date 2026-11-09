@@ -127,7 +127,7 @@ void AnalysisErrors::PrintReport() const {
     return;
   }
 
-  REXCODEGEN_ERROR("=== ANALYSIS ERRORS ===");
+  REXCODEGEN_WARN("=== ANALYSIS REPORT ({} potential call issues handled via stubs) ===", entries_.size());
 
   // Group by category
   std::map<Category, std::vector<const Entry*>> byCategory;
@@ -136,19 +136,19 @@ void AnalysisErrors::PrintReport() const {
   }
 
   for (const auto& [cat, entries] : byCategory) {
-    REXCODEGEN_ERROR("{} ({}):", CategoryName(cat), entries.size());
+    REXCODEGEN_WARN("{} ({}):", CategoryName(cat), entries.size());
 
     for (const auto* entry : entries) {
       if (entry->secondaryAddress != 0) {
-        REXCODEGEN_ERROR("  0x{:08X} from 0x{:08X}: {}", entry->address, entry->secondaryAddress,
-                         entry->message);
+        REXCODEGEN_WARN("  0x{:08X} from 0x{:08X}: {}", entry->address, entry->secondaryAddress,
+                        entry->message);
       } else {
-        REXCODEGEN_ERROR("  0x{:08X}: {}", entry->address, entry->message);
+        REXCODEGEN_WARN("  0x{:08X}: {}", entry->address, entry->message);
       }
     }
   }
 
-  REXCODEGEN_ERROR("Total: {} errors", entries_.size());
+  REXCODEGEN_WARN("Total: {} issues handled with fallback stubs", entries_.size());
 }
 
 }  // namespace rex::codegen

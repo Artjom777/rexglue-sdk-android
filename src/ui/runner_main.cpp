@@ -11,7 +11,12 @@
 
 #include <rex/rex_app.h>
 #include <rex/ui/windowed_app.h>
+#include <rex/logging.h>
 #include <memory>
+
+#if REX_PLATFORM_ANDROID
+#include <dlfcn.h>
+#endif
 
 namespace {
 
@@ -21,6 +26,32 @@ public:
 
   static std::unique_ptr<rex::ui::WindowedApp> Create(rex::ui::WindowedAppContext& ctx) {
     rex::PPCImageInfo ppc_info{};
+
+#if REX_PLATFORM_ANDROID
+    const char* candidate_libs[] = {
+        "libgame.so",
+        "libport.so",
+        "librecomp.so",
+        "libdefault.so",
+        "librexglue_game.so"
+    };
+    for (const char* lib_name : candidate_libs) {
+      void* handle = dlopen(lib_name, RTLD_NOW | RTLD_GLOBAL);
+      if (handle) {
+        using GetImageInfoFn = const rex::PPCImageInfo* (*)();
+        auto get_info = reinterpret_cast<GetImageInfoFn>(dlsym(handle, "ReXModule_GetImageInfo"));
+        if (get_info) {
+          const rex::PPCImageInfo* info = get_info();
+          if (info) {
+            ppc_info = *info;
+            REXLOG_INFO("ReXRunnerApp: Successfully bound recompiled PPCImageInfo from {}", lib_name);
+            break;
+          }
+        }
+      }
+    }
+#endif
+
     return std::unique_ptr<ReXRunnerApp>(new ReXRunnerApp(ctx, "rexglue_game", ppc_info));
   }
 };
