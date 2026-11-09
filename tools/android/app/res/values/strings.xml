@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ReXGlue Studio</string>
+    <string name="title_porter">ReXGlue Studio — Xbox 360 Porting Toolkit</string>
+    <string name="target_device">POCO X7 Pro (MediaTek Dimensity / Mali-G720 / 16KB Pages)</string>
+    <string name="section_project">Настройка проекта (Project Setup)</string>
+    <string name="label_xex_path">Путь к default.xex (XEX File Path):</string>
+    <string name="btn_select_file">Выбрать XEX / Browse File</string>
+    <string name="label_project_name">Имя проекта (Project Name):</string>
+    <string name="section_mali">Оптимизации MediaTek &amp; Mali-G720</string>
+    <string name="opt_mali_vk">Mali Vulkan Compatibility (Bypass Geometry Shaders)</string>
+    <string name="opt_page_size">16KB Page Alignment (Android 15 / HyperOS)</string>
+    <string name="opt_big_cores">Привязка к ядрам Cortex-X/A7 (Big Cores Affinity)</string>
+    <string name="btn_run_codegen">1. Запустить декомпиляцию и Codegen (Run Codegen)</string>
+    <string name="btn_build_apk">2. Собрать APK порт (Build Game Port APK)</string>
+    <string name="btn_launch_game">3. Запустить порт (Launch Recompiled Game)</string>
+    <string name="label_console">Логи сборки и рекомпиляции (Log Output):</string>
+</resources>

@@ -116,12 +116,25 @@ jobs:
           echo "=== Building Standard Android ARM64 SDK and rexglue CLI ==="
           POCO=0 ./tools/android/build_sdk.sh all
 
+      - name: Build POCO X7 Pro ReXGlue Studio APK
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_poco }}
+        run: |
+          echo "=== Packaging ReXGlue Studio APK for POCO X7 Pro ==="
+          ./tools/android/build_apk.sh studio poco
+
+      - name: Build Standard Android ARM64 ReXGlue Studio APK
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_standard }}
+        run: |
+          echo "=== Packaging Standard ReXGlue Studio APK for Android ARM64 ==="
+          ./tools/android/build_apk.sh studio arm64
+
       - name: Upload POCO X7 Pro Artifacts
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_poco }}
         uses: actions/upload-artifact@v4
         with:
-          name: rexglue-sdk-poco-x7-pro
+          name: rexglue-poco-x7-pro
           path: |
+            out/dist/*POCO-X7-Pro*.apk
             out/dist/rexglue-sdk-poco-x7-pro.zip
             out/dist/rexglue-sdk-poco-x7-pro-cli-only.zip
           retention-days: 14
@@ -130,8 +143,9 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_standard }}
         uses: actions/upload-artifact@v4
         with:
-          name: rexglue-sdk-android-arm64
+          name: rexglue-android-arm64
           path: |
+            out/dist/*Android-arm64*.apk
             out/dist/rexglue-sdk-android-arm64.zip
             out/dist/rexglue-sdk-android-arm64-cli-only.zip
           retention-days: 14
@@ -141,6 +155,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            out/dist/*.apk
             out/dist/*.zip
             out/dist/*.tar.gz
           generate_release_notes: true

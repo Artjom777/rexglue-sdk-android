@@ -27,6 +27,33 @@ target_link_libraries(rexglue
 
 if(ANDROID)
     target_link_libraries(rexglue PRIVATE android log)
+
+    add_library(rexglue_jni SHARED
+        rexglue_jni.cpp
+        ui/ui.cpp
+        ui/progress.cpp
+        commands/codegen_command.cpp
+        commands/init_command.cpp
+        commands/test_recompiler.cpp
+        commands/project_scan.cpp
+    )
+    target_include_directories(rexglue_jni PRIVATE
+        ${REXGLUE_ROOT}/src
+        ${REXGLUE_ROOT}/thirdparty/disasm
+        ${REXGLUE_ROOT}/thirdparty/cli11/include
+    )
+    target_link_libraries(rexglue_jni PRIVATE
+        rexcodegen
+        android
+        log
+    )
+    set_target_properties(rexglue_jni PROPERTIES OUTPUT_NAME "rexglue_jni")
+    rex_target_pch(rexglue_jni <CLI/CLI.hpp>)
+    install(TARGETS rexglue_jni
+        EXPORT rexglueTargets
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
 endif()
 
 rex_target_pch(rexglue <CLI/CLI.hpp>)

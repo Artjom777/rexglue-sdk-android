@@ -33,10 +33,17 @@ public class GameActivity extends SDLActivity {
 
     @Override
     protected String[] getLibraries() {
+        File mainLib = new File(getApplicationInfo().nativeLibraryDir, "libmain.so");
+        if (mainLib.exists()) {
+            return new String[] {
+                "c++_shared",
+                "rexruntime",
+                "main"
+            };
+        }
         return new String[] {
             "c++_shared",
-            "rexruntime",
-            "main"
+            "rexruntime"
         };
     }
 }
