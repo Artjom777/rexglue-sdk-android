@@ -35,10 +35,28 @@ public class GameActivity extends SDLActivity {
     protected String[] getArguments() {
         ArrayList<String> args = new ArrayList<>();
 
-        // 1. Check Intent extra
+        // 1. Check Intent extras
         String gameData = getIntent().getStringExtra("game_data_root");
         if (gameData != null && !gameData.isEmpty()) {
             args.add("--game_data_root=" + gameData);
+        }
+        String updateData = getIntent().getStringExtra("update_data_root");
+        if (updateData != null && !updateData.isEmpty()) {
+            args.add("--update_data_root=" + updateData);
+        }
+        ArrayList<String> allIsos = getIntent().getStringArrayListExtra("iso_paths");
+        if (allIsos != null) {
+            if (args.isEmpty() && allIsos.size() > 0) {
+                args.add("--game_data_root=" + allIsos.get(0));
+            }
+            if (allIsos.size() > 1) {
+                args.add("--disc2_data_root=" + allIsos.get(1));
+            }
+            if (allIsos.size() > 2) {
+                args.add("--disc3_data_root=" + allIsos.get(2));
+            }
+        }
+        if (!args.isEmpty()) {
             return args.toArray(new String[0]);
         }
 
@@ -57,10 +75,18 @@ public class GameActivity extends SDLActivity {
                     while ((line = reader.readLine()) != null) {
                         line = line.trim();
                         if (line.isEmpty() || line.startsWith("#")) continue;
-                        if (line.startsWith("--game_data_root=")) {
+                        if (line.startsWith("--")) {
                             args.add(line);
+                        } else if (line.startsWith("iso_0=")) {
+                            args.add("--game_data_root=" + line.substring("iso_0=".length()).trim());
                         } else if (line.startsWith("iso_path=")) {
                             args.add("--game_data_root=" + line.substring("iso_path=".length()).trim());
+                        } else if (line.startsWith("iso_1=")) {
+                            args.add("--disc2_data_root=" + line.substring("iso_1=".length()).trim());
+                        } else if (line.startsWith("iso_2=")) {
+                            args.add("--disc3_data_root=" + line.substring("iso_2=".length()).trim());
+                        } else if (line.startsWith("update_path=")) {
+                            args.add("--update_data_root=" + line.substring("update_path=".length()).trim());
                         }
                     }
                 } catch (Exception ignored) {}
@@ -83,6 +109,9 @@ public class GameActivity extends SDLActivity {
             File[] isos = defaultDir.listFiles((d, name) -> name.toLowerCase().endsWith(".iso"));
             if (isos != null && isos.length > 0) {
                 args.add("--game_data_root=" + isos[0].getAbsolutePath());
+                if (isos.length > 1) {
+                    args.add("--disc2_data_root=" + isos[1].getAbsolutePath());
+                }
                 return args.toArray(new String[0]);
             }
         }

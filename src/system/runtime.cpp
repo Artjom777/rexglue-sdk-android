@@ -34,6 +34,8 @@ REXCVAR_DEFINE_STRING(user_data_root, "", "Runtime", "Override user data path");
 REXCVAR_DEFINE_STRING(update_data_root, "", "Runtime", "Override update data path");
 REXCVAR_DEFINE_STRING(cache_root, "", "Runtime", "Override shader cache path");
 REXCVAR_DEFINE_STRING(metadata_root, "", "Runtime", "Override metadata path");
+REXCVAR_DEFINE_STRING(disc2_data_root, "", "Runtime", "Secondary disc image (Disc 2)");
+REXCVAR_DEFINE_STRING(disc3_data_root, "", "Runtime", "Tertiary disc image (Disc 3)");
 
 namespace rex {
 
@@ -341,11 +343,70 @@ bool Runtime::SetupVfs() {
     auto abs_update_root = std::filesystem::absolute(update_data_root_);
     if (std::filesystem::exists(abs_update_root)) {
       auto update_mount = "\\Device\\Harddisk0\\PartitionUpdate";
-      auto update_device =
-          std::make_unique<rex::filesystem::HostPathDevice>(update_mount, abs_update_root, true);
+      std::unique_ptr<rex::filesystem::Device> update_device;
+      std::string update_ext = abs_update_root.extension().string();
+      for (auto& c : update_ext) c = static_cast<char>(std::tolower(c));
+
+      if (rex::filesystem::DiscImageDevice::IsDiscImage(abs_update_root) || update_ext == ".iso" ||
+          update_ext == ".xiso") {
+        update_device = std::make_unique<rex::filesystem::DiscImageDevice>(update_mount, abs_update_root);
+      } else {
+        update_device = std::make_unique<rex::filesystem::HostPathDevice>(update_mount, abs_update_root, true);
+      }
+
       if (update_device->Initialize() && file_system_->RegisterDevice(std::move(update_device))) {
         file_system_->RegisterSymbolicLink("update:", update_mount);
         REXSYS_DEBUG("  Mounted {} at update:", abs_update_root.string());
+      }
+    }
+  }
+
+  // Mount disc2 as \Device\Cdrom1 if provided
+  std::string disc2_path = REXCVAR_GET(disc2_data_root);
+  if (!disc2_path.empty()) {
+    auto abs_disc2 = std::filesystem::absolute(disc2_path);
+    if (std::filesystem::exists(abs_disc2)) {
+      auto cdrom1_mount = "\\Device\\Cdrom1";
+      std::unique_ptr<rex::filesystem::Device> cdrom1_device;
+      std::string d2_ext = abs_disc2.extension().string();
+      for (auto& c : d2_ext) c = static_cast<char>(std::tolower(c));
+
+      if (rex::filesystem::DiscImageDevice::IsDiscImage(abs_disc2) || d2_ext == ".iso" ||
+          d2_ext == ".xiso") {
+        cdrom1_device = std::make_unique<rex::filesystem::DiscImageDevice>(cdrom1_mount, abs_disc2);
+      } else {
+        cdrom1_device = std::make_unique<rex::filesystem::HostPathDevice>(cdrom1_mount, abs_disc2, true);
+      }
+
+      if (cdrom1_device->Initialize() && file_system_->RegisterDevice(std::move(cdrom1_device))) {
+        file_system_->RegisterSymbolicLink("disc2:", cdrom1_mount);
+        file_system_->RegisterSymbolicLink("cdrom1:", cdrom1_mount);
+        REXSYS_DEBUG("  Mounted Disc 2 {} at {}", abs_disc2.string(), cdrom1_mount);
+      }
+    }
+  }
+
+  // Mount disc3 as \Device\Cdrom2 if provided
+  std::string disc3_path = REXCVAR_GET(disc3_data_root);
+  if (!disc3_path.empty()) {
+    auto abs_disc3 = std::filesystem::absolute(disc3_path);
+    if (std::filesystem::exists(abs_disc3)) {
+      auto cdrom2_mount = "\\Device\\Cdrom2";
+      std::unique_ptr<rex::filesystem::Device> cdrom2_device;
+      std::string d3_ext = abs_disc3.extension().string();
+      for (auto& c : d3_ext) c = static_cast<char>(std::tolower(c));
+
+      if (rex::filesystem::DiscImageDevice::IsDiscImage(abs_disc3) || d3_ext == ".iso" ||
+          d3_ext == ".xiso") {
+        cdrom2_device = std::make_unique<rex::filesystem::DiscImageDevice>(cdrom2_mount, abs_disc3);
+      } else {
+        cdrom2_device = std::make_unique<rex::filesystem::HostPathDevice>(cdrom2_mount, abs_disc3, true);
+      }
+
+      if (cdrom2_device->Initialize() && file_system_->RegisterDevice(std::move(cdrom2_device))) {
+        file_system_->RegisterSymbolicLink("disc3:", cdrom2_mount);
+        file_system_->RegisterSymbolicLink("cdrom2:", cdrom2_mount);
+        REXSYS_DEBUG("  Mounted Disc 3 {} at {}", abs_disc3.string(), cdrom2_mount);
       }
     }
   }

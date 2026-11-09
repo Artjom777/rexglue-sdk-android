@@ -2,217 +2,371 @@
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/bg_dark"
+    android:background="#101115"
     android:fillViewport="true">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="16dp">
+        android:paddingStart="18dp"
+        android:paddingEnd="18dp"
+        android:paddingTop="28dp"
+        android:paddingBottom="36dp">
 
-        <!-- App Header -->
+        <!-- App Header: Exactly as in screenshot -->
         <TextView
+            android:id="@+id/tv_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/title_porter"
-            android:textColor="@color/accent_blue"
-            android:textSize="20sp"
+            android:text="ReXGlue Studio"
+            android:textColor="#FFFFFF"
+            android:textSize="32sp"
             android:textStyle="bold" />
 
         <TextView
-            android:id="@+id/tv_device_info"
+            android:id="@+id/tv_subtitle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="@string/target_device"
-            android:textColor="@color/accent_purple"
-            android:textSize="13sp" />
+            android:layout_marginTop="2dp"
+            android:text="Xbox 360 Porting Toolkit"
+            android:textColor="#7A7D88"
+            android:textSize="15sp" />
 
-        <!-- Card: Project Setup -->
+        <!-- Card 1: Настройка -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:background="@color/card_dark"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/bg_card"
             android:orientation="vertical"
-            android:padding="12dp">
+            android:padding="16dp">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/section_project"
-                android:textColor="@color/text_primary"
+                android:text="Настройка"
+                android:textColor="#FFFFFF"
                 android:textSize="16sp"
-                android:textStyle="bold" />
+                android:textStyle="bold"
+                android:layout_marginBottom="12dp" />
+
+            <!-- Primary ISO (Disc 1) Pill Input -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:background="@drawable/bg_input_pill"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingStart="14dp"
+                android:paddingEnd="6dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="📁"
+                    android:textSize="15sp"
+                    android:layout_marginEnd="8dp" />
+
+                <EditText
+                    android:id="@+id/et_xex_path"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@null"
+                    android:hint="Путь к игре (Диск 1)..."
+                    android:textColor="#FFFFFF"
+                    android:textColorHint="#686C7B"
+                    android:textSize="14sp"
+                    android:singleLine="true" />
+
+                <Button
+                    android:id="@+id/btn_browse_xex"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:background="@drawable/bg_pill_button"
+                    android:text="📁 Обзор"
+                    android:textColor="#0F1C3A"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:minWidth="0dp"
+                    android:minHeight="0dp" />
+            </LinearLayout>
+
+            <!-- Dynamic Container for Extra ISO Discs -->
+            <LinearLayout
+                android:id="@+id/container_extra_isos"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
+            <!-- Button: Add Extra Disc (+) -->
+            <LinearLayout
+                android:id="@+id/btn_add_iso"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_btn_add"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingStart="12dp"
+                android:paddingEnd="14dp"
+                android:clickable="true"
+                android:focusable="true">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="+"
+                    android:textColor="#ADC6FF"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:layout_marginEnd="6dp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Добавить ISO диск / часть"
+                    android:textColor="#ADC6FF"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- Title Update Input Pill -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/bg_input_pill"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingStart="14dp"
+                android:paddingEnd="6dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="📦"
+                    android:textSize="15sp"
+                    android:layout_marginEnd="8dp" />
+
+                <EditText
+                    android:id="@+id/et_update_path"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@null"
+                    android:hint="Title Update / Патч (опц)..."
+                    android:textColor="#FFFFFF"
+                    android:textColorHint="#686C7B"
+                    android:textSize="14sp"
+                    android:singleLine="true" />
+
+                <Button
+                    android:id="@+id/btn_browse_update"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:background="@drawable/bg_pill_button"
+                    android:text="📁 Обзор"
+                    android:textColor="#0F1C3A"
+                    android:textSize="13sp"
+                    android:textStyle="bold"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:minWidth="0dp"
+                    android:minHeight="0dp" />
+            </LinearLayout>
+
+            <!-- Project Name Field (underline style from screenshot) -->
+            <EditText
+                android:id="@+id/et_project_name"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="xbox360_port"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#686C7B"
+                android:textSize="14sp"
+                android:paddingBottom="6dp"
+                android:background="@null" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#2C303C" />
+        </LinearLayout>
+
+        <!-- Card 2: Режим -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="16dp">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/label_xex_path"
-                android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
+                android:text="Режим"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="12dp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal">
 
-                <EditText
-                    android:id="@+id/et_xex_path"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:hint="/sdcard/game.iso или default.xex"
-                    android:textColor="@color/text_primary"
-                    android:textColorHint="@color/text_secondary"
-                    android:textSize="14sp" />
-
-                <Button
-                    android:id="@+id/btn_browse_xex"
+                <!-- Pill 1: Монтирование ISO -->
+                <LinearLayout
+                    android:id="@+id/btn_mode_iso"
                     android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Browse"
-                    android:backgroundTint="@color/border_dark"
-                    android:textColor="@color/accent_blue" />
+                    android:layout_height="40dp"
+                    android:background="@drawable/bg_pill_selected"
+                    android:gravity="center_vertical"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <TextView
+                        android:id="@+id/tv_mode_iso_icon"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="🔘"
+                        android:textSize="12sp"
+                        android:layout_marginEnd="6dp" />
+
+                    <TextView
+                        android:id="@+id/tv_mode_iso_text"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Монтирование ISO"
+                        android:textColor="#0F1C3A"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Pill 2: Standalone APK -->
+                <LinearLayout
+                    android:id="@+id/btn_mode_standalone"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="10dp"
+                    android:background="@drawable/bg_pill_unselected"
+                    android:gravity="center_vertical"
+                    android:paddingStart="14dp"
+                    android:paddingEnd="14dp"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <TextView
+                        android:id="@+id/tv_mode_standalone_icon"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="📄"
+                        android:textSize="12sp"
+                        android:layout_marginEnd="6dp" />
+
+                    <TextView
+                        android:id="@+id/tv_mode_standalone_text"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Standalone APK"
+                        android:textColor="#838898"
+                        android:textSize="13sp" />
+                </LinearLayout>
             </LinearLayout>
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/label_project_name"
-                android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
-
-            <EditText
-                android:id="@+id/et_project_name"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:hint="my_xbox_port"
-                android:text="xbox360_port"
-                android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_secondary"
-                android:textSize="14sp" />
         </LinearLayout>
 
-        <!-- Card: Port Mode Selection -->
+        <!-- Card 3: Оптимизация -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:background="@color/card_dark"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_card"
             android:orientation="vertical"
-            android:padding="12dp">
+            android:padding="16dp">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="@string/section_port_mode"
-                android:textColor="@color/text_primary"
-                android:textSize="15sp"
-                android:textStyle="bold" />
-
-            <RadioGroup
-                android:id="@+id/rg_port_mode"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp">
-
-                <RadioButton
-                    android:id="@+id/rb_mode_iso"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:checked="true"
-                    android:text="@string/mode_iso"
-                    android:textColor="@color/text_primary"
-                    android:textSize="13sp" />
-
-                <RadioButton
-                    android:id="@+id/rb_mode_standalone"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/mode_standalone"
-                    android:textColor="@color/text_primary"
-                    android:textSize="13sp" />
-            </RadioGroup>
-        </LinearLayout>
-
-        <!-- Card: MediaTek & Mali-G720 Optimizations -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:background="@color/card_dark"
-            android:orientation="vertical"
-            android:padding="12dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/section_mali"
-                android:textColor="@color/text_primary"
-                android:textSize="15sp"
-                android:textStyle="bold" />
+                android:text="Оптимизация"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="6dp" />
 
             <CheckBox
                 android:id="@+id/cb_mali_vk"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:checked="true"
-                android:text="@string/opt_mali_vk"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp" />
+                android:text="Mali Vulkan"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:buttonTint="#ADC6FF" />
 
             <CheckBox
                 android:id="@+id/cb_page_size"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:checked="true"
-                android:text="@string/opt_page_size"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp" />
+                android:text="16KB Alignment"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:buttonTint="#ADC6FF" />
 
             <CheckBox
                 android:id="@+id/cb_big_cores"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:checked="true"
-                android:text="@string/opt_big_cores"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp" />
+                android:text="Cortex Affinity"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:buttonTint="#ADC6FF" />
         </LinearLayout>
 
-        <!-- Action Buttons -->
+        <!-- Big Action Buttons (exact 1:1 colors and shapes from screenshot) -->
+        <!-- 1. Декомпиляция -->
         <Button
             android:id="@+id/btn_codegen"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="54dp"
             android:layout_marginTop="16dp"
-            android:backgroundTint="@color/accent_blue"
-            android:text="@string/btn_run_codegen"
-            android:textColor="#FFFFFF"
+            android:background="@drawable/bg_button_blue"
+            android:text="Декомпиляция"
+            android:textColor="#0F1C3A"
+            android:textSize="17sp"
             android:textStyle="bold" />
 
+        <!-- 2. Собрать APK -->
         <Button
             android:id="@+id/btn_build_port_apk"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:backgroundTint="@color/accent_purple"
-            android:text="@string/btn_build_apk"
-            android:textColor="#FFFFFF"
+            android:layout_height="54dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_button_purple"
+            android:text="Собрать APK"
+            android:textColor="#280D46"
+            android:textSize="17sp"
             android:textStyle="bold" />
 
+        <!-- 3. Запустить игру -->
         <Button
             android:id="@+id/btn_launch"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:backgroundTint="@color/accent_green"
-            android:text="@string/btn_launch_game"
-            android:textColor="#FFFFFF"
+            android:layout_height="54dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_button_green"
+            android:text="Запустить игру"
+            android:textColor="#0C3612"
+            android:textSize="17sp"
             android:textStyle="bold" />
 
         <ProgressBar
@@ -222,33 +376,35 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
             android:indeterminate="true"
+            android:indeterminateTint="#ADC6FF"
             android:visibility="gone" />
 
-        <!-- Console Log Output -->
+        <!-- Section: Логи -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="@string/label_console"
-            android:textColor="@color/text_secondary"
-            android:textSize="13sp" />
+            android:layout_marginTop="16dp"
+            android:text="Логи"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:textStyle="bold" />
 
         <ScrollView
             android:id="@+id/scroll_console"
             android:layout_width="match_parent"
-            android:layout_height="220dp"
-            android:layout_marginTop="4dp"
-            android:background="@color/console_bg"
-            android:padding="8dp">
+            android:layout_height="120dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_console"
+            android:padding="12dp">
 
             <TextView
                 android:id="@+id/tv_console"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:fontFamily="monospace"
-                android:text="ReXGlue Studio Initialized.\nPOCO X7 Pro Ready.\nWaiting for default.xex..."
-                android:textColor="@color/console_text"
-                android:textSize="11sp" />
+                android:text="Подключение успешно\nСборка готова к запуску..."
+                android:textColor="#7C808F"
+                android:textSize="12sp" />
         </ScrollView>
 
     </LinearLayout>

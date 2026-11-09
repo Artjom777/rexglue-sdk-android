@@ -2,19 +2,22 @@ package com.rexglue.app;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.graphics.Color;
+import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.Settings;
 import android.util.Log;
+import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.widget.ProgressBar;
-import android.widget.RadioButton;
-import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -24,35 +27,48 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
  * ReXGlue Studio Main Activity.
- * Provides on-device Xbox 360 PPC -> C++ recompilation and APK port creation
- * directly on POCO X7 Pro without needing a PC.
+ * Provides on-device Xbox 360 PPC -> C++ recompilation, multi-disc ISO and Title Update support
+ * directly on POCO X7 Pro without a PC.
  */
 public class MainActivity extends Activity {
     private static final String TAG = "ReXGlueStudio";
-    private static final int REQUEST_PICK_XEX = 1001;
+    private static final int REQUEST_PICK_FILE = 1001;
     private static final int REQUEST_PERMISSIONS = 1002;
 
-    private TextView tvDeviceInfo;
-    private EditText etXexPath;
+    private EditText etIsoPath1;
+    private Button btnBrowseIso1;
+    private LinearLayout containerExtraIsos;
+    private LinearLayout btnAddIso;
+    private EditText etUpdatePath;
+    private Button btnBrowseUpdate;
     private EditText etProjectName;
-    private RadioGroup rgPortMode;
-    private RadioButton rbModeIso;
-    private RadioButton rbModeStandalone;
+
+    private LinearLayout btnModeIso;
+    private TextView tvModeIsoText;
+    private LinearLayout btnModeStandalone;
+    private TextView tvModeStandaloneText;
+
     private CheckBox cbMaliVk;
     private CheckBox cbPageSize;
     private CheckBox cbBigCores;
-    private Button btnBrowse;
+
     private Button btnCodegen;
     private Button btnBuildApk;
     private Button btnLaunch;
     private ProgressBar progressBar;
     private TextView tvConsole;
     private ScrollView scrollConsole;
+
+    private int selectedMode = 1; // 1 = ISO Mount, 2 = Standalone APK
+    private int currentPickTarget = 0; // 0 = primary ISO, -1 = Title Update, > 0 = extra ISO index (1-based)
+    private final List<EditText> extraIsoInputs = new ArrayList<>();
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private boolean isNativeLoaded = false;
@@ -62,6 +78,7 @@ public class MainActivity extends Activity {
     public native String nativeGetDeviceInfo();
     public native String nativeInspectIso(String isoPath);
     public native int nativeExtractIso(String isoPath, String destDir, boolean extractAll);
+    public native int nativeRunCodegenMulti(String[] isoPaths, String updatePath, String projectName, String outDir, boolean maliOpt, int mode);
     public native int nativeRunCodegenMode(String inputPath, String projectName, String outDir, boolean maliOpt, int mode);
     public native int nativeRunCodegen(String xexPath, String projectName, String outDir, boolean maliOpt);
 
@@ -77,16 +94,23 @@ public class MainActivity extends Activity {
     }
 
     private void initViews() {
-        tvDeviceInfo = findViewById(R.id.tv_device_info);
-        etXexPath = findViewById(R.id.et_xex_path);
+        etIsoPath1 = findViewById(R.id.et_xex_path);
+        btnBrowseIso1 = findViewById(R.id.btn_browse_xex);
+        containerExtraIsos = findViewById(R.id.container_extra_isos);
+        btnAddIso = findViewById(R.id.btn_add_iso);
+        etUpdatePath = findViewById(R.id.et_update_path);
+        btnBrowseUpdate = findViewById(R.id.btn_browse_update);
         etProjectName = findViewById(R.id.et_project_name);
-        rgPortMode = findViewById(R.id.rg_port_mode);
-        rbModeIso = findViewById(R.id.rb_mode_iso);
-        rbModeStandalone = findViewById(R.id.rb_mode_standalone);
+
+        btnModeIso = findViewById(R.id.btn_mode_iso);
+        tvModeIsoText = findViewById(R.id.tv_mode_iso_text);
+        btnModeStandalone = findViewById(R.id.btn_mode_standalone);
+        tvModeStandaloneText = findViewById(R.id.tv_mode_standalone_text);
+
         cbMaliVk = findViewById(R.id.cb_mali_vk);
         cbPageSize = findViewById(R.id.cb_page_size);
         cbBigCores = findViewById(R.id.cb_big_cores);
-        btnBrowse = findViewById(R.id.btn_browse_xex);
+
         btnCodegen = findViewById(R.id.btn_codegen);
         btnBuildApk = findViewById(R.id.btn_build_port_apk);
         btnLaunch = findViewById(R.id.btn_launch);
@@ -94,12 +118,26 @@ public class MainActivity extends Activity {
         tvConsole = findViewById(R.id.tv_console);
         scrollConsole = findViewById(R.id.scroll_console);
 
-        btnBrowse.setOnClickListener(v -> pickXexFile());
+        btnBrowseIso1.setOnClickListener(v -> {
+            currentPickTarget = 0;
+            pickFile();
+        });
+
+        btnBrowseUpdate.setOnClickListener(v -> {
+            currentPickTarget = -1;
+            pickFile();
+        });
+
+        btnAddIso.setOnClickListener(v -> addExtraIsoRow());
+
+        btnModeIso.setOnClickListener(v -> setPortMode(1));
+        btnModeStandalone.setOnClickListener(v -> setPortMode(2));
+
         btnCodegen.setOnClickListener(v -> startCodegen());
         btnBuildApk.setOnClickListener(v -> buildGameApk());
         btnLaunch.setOnClickListener(v -> launchGame());
 
-        // Default path suggestion if common directory exists
+        // Default path suggestion if Xbox360 or Download folders exist
         File[] candidateDirs = new File[] {
             new File(Environment.getExternalStorageDirectory(), "Xbox360"),
             new File(Environment.getExternalStorageDirectory(), "Download")
@@ -108,10 +146,10 @@ public class MainActivity extends Activity {
             if (dir.exists()) {
                 File[] files = dir.listFiles((d, name) -> {
                     String lower = name.toLowerCase();
-                    return lower.endsWith(".iso") || lower.endsWith(".xex");
+                    return lower.endsWith(".iso") || lower.endsWith(".xiso") || lower.endsWith(".xex");
                 });
                 if (files != null && files.length > 0) {
-                    etXexPath.setText(files[0].getAbsolutePath());
+                    etIsoPath1.setText(files[0].getAbsolutePath());
                     suggestProjectName(files[0].getAbsolutePath());
                     break;
                 }
@@ -119,29 +157,114 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void setPortMode(int mode) {
+        selectedMode = mode;
+        if (mode == 1) {
+            btnModeIso.setBackgroundResource(R.drawable.bg_pill_selected);
+            tvModeIsoText.setTextColor(Color.parseColor("#0F1C3A"));
+            tvModeIsoText.setTypeface(null, Typeface.BOLD);
+
+            btnModeStandalone.setBackgroundResource(R.drawable.bg_pill_unselected);
+            tvModeStandaloneText.setTextColor(Color.parseColor("#838898"));
+            tvModeStandaloneText.setTypeface(null, Typeface.NORMAL);
+        } else {
+            btnModeStandalone.setBackgroundResource(R.drawable.bg_pill_selected);
+            tvModeStandaloneText.setTextColor(Color.parseColor("#0F1C3A"));
+            tvModeStandaloneText.setTypeface(null, Typeface.BOLD);
+
+            btnModeIso.setBackgroundResource(R.drawable.bg_pill_unselected);
+            tvModeIsoText.setTextColor(Color.parseColor("#838898"));
+            tvModeIsoText.setTypeface(null, Typeface.NORMAL);
+        }
+    }
+
+    private void addExtraIsoRow() {
+        final int discIndex = extraIsoInputs.size() + 2;
+
+        final LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setBackgroundResource(R.drawable.bg_input_pill);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(50));
+        lp.topMargin = dpToPx(8);
+        row.setLayoutParams(lp);
+        row.setPadding(dpToPx(14), 0, dpToPx(6), 0);
+
+        TextView icon = new TextView(this);
+        icon.setText("📁");
+        icon.setTextSize(15);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        iconLp.setMarginEnd(dpToPx(8));
+        icon.setLayoutParams(iconLp);
+        row.addView(icon);
+
+        final EditText et = new EditText(this);
+        et.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1.0f));
+        et.setBackground(null);
+        et.setHint("Диск " + discIndex + " (ISO)...");
+        et.setTextColor(Color.WHITE);
+        et.setHintTextColor(Color.parseColor("#686C7B"));
+        et.setTextSize(14);
+        et.setSingleLine(true);
+        row.addView(et);
+        extraIsoInputs.add(et);
+
+        Button btnBrowse = new Button(this);
+        btnBrowse.setText("📁 Обзор");
+        btnBrowse.setBackgroundResource(R.drawable.bg_pill_button);
+        btnBrowse.setTextColor(Color.parseColor("#0F1C3A"));
+        btnBrowse.setTextSize(13);
+        btnBrowse.setTypeface(null, Typeface.BOLD);
+        btnBrowse.setPadding(dpToPx(14), 0, dpToPx(14), 0);
+        btnBrowse.setMinWidth(0);
+        btnBrowse.setMinHeight(0);
+        LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dpToPx(36));
+        btnBrowse.setLayoutParams(btnLp);
+        btnBrowse.setOnClickListener(v -> {
+            currentPickTarget = extraIsoInputs.indexOf(et) + 1;
+            pickFile();
+        });
+        row.addView(btnBrowse);
+
+        TextView btnRemove = new TextView(this);
+        btnRemove.setText("✕");
+        btnRemove.setTextColor(Color.parseColor("#ADC6FF"));
+        btnRemove.setTextSize(16);
+        btnRemove.setTypeface(null, Typeface.BOLD);
+        btnRemove.setPadding(dpToPx(10), dpToPx(6), dpToPx(6), dpToPx(6));
+        btnRemove.setClickable(true);
+        btnRemove.setFocusable(true);
+        btnRemove.setOnClickListener(v -> {
+            containerExtraIsos.removeView(row);
+            extraIsoInputs.remove(et);
+        });
+        row.addView(btnRemove);
+
+        containerExtraIsos.addView(row);
+    }
+
+    private int dpToPx(int dp) {
+        float density = getResources().getDisplayMetrics().density;
+        return Math.round((float) dp * density);
+    }
+
     private void loadNativeLibraries() {
         try {
             System.loadLibrary("c++_shared");
-            appendLog("[INIT] Loaded libc++_shared");
-        } catch (Throwable t) {
-            appendLog("[WARN] libc++_shared not loaded: " + t.getMessage());
-        }
+        } catch (Throwable ignored) {}
 
         try {
             System.loadLibrary("rexruntime");
-            appendLog("[INIT] Loaded librexruntime (Mali/Vulkan/16KB OK)");
-        } catch (Throwable t) {
-            appendLog("[WARN] rexruntime not loaded: " + t.getMessage());
-        }
+        } catch (Throwable ignored) {}
 
         try {
             System.loadLibrary("rexglue_jni");
             isNativeLoaded = true;
             nativeRegisterLogCallback();
-            appendLog("[INIT] ReXGlue JNI Engine connected successfully");
-        } catch (Throwable t) {
-            appendLog("[WARN] rexglue_jni: " + t.getMessage() + " (will use CLI fallback)");
-        }
+        } catch (Throwable ignored) {}
     }
 
     private void requestStoragePermissions() {
@@ -169,6 +292,50 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void pickFile() {
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        intent.setType("*/*");
+        startActivityForResult(intent, REQUEST_PICK_FILE);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_PICK_FILE && resultCode == RESULT_OK && data != null) {
+            Uri uri = data.getData();
+            if (uri != null) {
+                String path = resolveUriToPath(uri);
+                if (currentPickTarget == 0) {
+                    etIsoPath1.setText(path);
+                    suggestProjectName(path);
+                    inspectAndLogIso(path, "Диск 1");
+                } else if (currentPickTarget == -1) {
+                    etUpdatePath.setText(path);
+                    appendLog("[TU] Выбран Title Update: " + path);
+                } else {
+                    int idx = currentPickTarget - 1;
+                    if (idx >= 0 && idx < extraIsoInputs.size()) {
+                        extraIsoInputs.get(idx).setText(path);
+                        inspectAndLogIso(path, "Диск " + (idx + 2));
+                    }
+                }
+            }
+        }
+    }
+
+    private void inspectAndLogIso(String path, String label) {
+        appendLog("[SELECT] " + label + ": " + path);
+        if (isNativeLoaded) {
+            try {
+                String isoInfo = nativeInspectIso(path);
+                if (isoInfo != null && isoInfo.contains("\"valid\":true")) {
+                    appendLog("[ISO] Проверен образ " + label + " (GDFX)");
+                    appendLog("[ISO] " + isoInfo);
+                }
+            } catch (Throwable ignored) {}
+        }
+    }
+
     private void suggestProjectName(String path) {
         if (path == null || path.isEmpty()) return;
         File f = new File(path);
@@ -178,58 +345,17 @@ public class MainActivity extends Activity {
         } else if (f.getParentFile() != null) {
             name = f.getParentFile().getName();
         } else {
-            name = "xbox_port";
+            name = "xbox360_port";
         }
         name = name.replaceAll("[^a-zA-Z0-9_]", "_");
-        if (name.isEmpty()) name = "xbox_port";
+        if (name.isEmpty()) name = "xbox360_port";
         etProjectName.setText(name);
-    }
-
-    private void pickXexFile() {
-        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-        intent.setType("*/*");
-        startActivityForResult(intent, REQUEST_PICK_XEX);
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_PICK_XEX && resultCode == RESULT_OK && data != null) {
-            Uri uri = data.getData();
-            if (uri != null) {
-                String path = resolveUriToPath(uri);
-                etXexPath.setText(path);
-                suggestProjectName(path);
-
-                appendLog("[SELECT] Выбран файл: " + path);
-                boolean isIso = path.toLowerCase().endsWith(".iso") || path.toLowerCase().endsWith(".xiso");
-
-                if (isNativeLoaded) {
-                    try {
-                        String isoInfo = nativeInspectIso(path);
-                        if (isoInfo != null && isoInfo.contains("\"valid\":true")) {
-                            isIso = true;
-                            appendLog("[ISO] Проверен образ Xbox 360 GDFX!");
-                            appendLog("[ISO] " + isoInfo);
-                        }
-                    } catch (Throwable ignored) {}
-                }
-
-                if (isIso) {
-                    appendLog("[ISO] Обнаружен Xbox 360 ISO образ.");
-                    appendLog("[INFO] Выберите режим сборки:");
-                    appendLog("  • Режим 1: Монтирование ISO (быстрая сборка, APK ~25MB, чтение прямо из .iso)");
-                    appendLog("  • Режим 2: Standalone Full APK (полное извлечение файлов в готовый APK)");
-                }
-            }
-        }
     }
 
     private String resolveUriToPath(Uri uri) {
         if ("file".equalsIgnoreCase(uri.getScheme())) {
             return uri.getPath();
         }
-        // If content URI, copy to local cache to guarantee standard POSIX file path
         try {
             String displayName = "game.iso";
             try (android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
@@ -255,12 +381,24 @@ public class MainActivity extends Activity {
     }
 
     private void startCodegen() {
-        final String inputPath = etXexPath.getText().toString().trim();
-        final String projectName = etProjectName.getText().toString().trim();
-        final int mode = (rbModeStandalone != null && rbModeStandalone.isChecked()) ? 2 : 1;
+        final List<String> isoList = new ArrayList<>();
+        String p1 = etIsoPath1.getText().toString().trim();
+        if (!p1.isEmpty() && new File(p1).exists()) {
+            isoList.add(p1);
+        }
+        for (EditText et : extraIsoInputs) {
+            String p = et.getText().toString().trim();
+            if (!p.isEmpty() && new File(p).exists()) {
+                isoList.add(p);
+            }
+        }
 
-        if (inputPath.isEmpty() || !new File(inputPath).exists()) {
-            Toast.makeText(this, "Пожалуйста, укажите существующий Xbox 360 .iso или default.xex", Toast.LENGTH_LONG).show();
+        final String updatePath = etUpdatePath.getText().toString().trim();
+        final String projectName = etProjectName.getText().toString().trim();
+        final int mode = selectedMode;
+
+        if (isoList.isEmpty()) {
+            Toast.makeText(this, "Пожалуйста, выберите хотя бы 1 ISO образ игры", Toast.LENGTH_LONG).show();
             return;
         }
 
@@ -269,10 +407,15 @@ public class MainActivity extends Activity {
 
         setUiBusy(true);
         appendLog("\n========================================");
-        appendLog("[START] Запуск ReXGlue Codegen для POCO X7 Pro...");
-        appendLog("[INFO] Входной файл: " + inputPath);
-        appendLog("[INFO] Режим: " + (mode == 2 ? "Режим 2 (Standalone Full APK)" : "Режим 1 (Монтирование ISO)"));
-        appendLog("[INFO] Каталог проекта: " + outputDir.getAbsolutePath());
+        appendLog("[START] Запуск декомпиляции для " + projectName);
+        appendLog("[INFO] Прикреплено ISO дисков: " + isoList.size());
+        for (int i = 0; i < isoList.size(); i++) {
+            appendLog("[INFO]   Диск " + (i + 1) + ": " + isoList.get(i));
+        }
+        if (!updatePath.isEmpty()) {
+            appendLog("[INFO]   Title Update: " + updatePath);
+        }
+        appendLog("[INFO] Режим: " + (mode == 2 ? "Режим 2 (Standalone APK)" : "Режим 1 (Монтирование ISO)"));
         appendLog("========================================");
 
         executor.execute(() -> {
@@ -283,43 +426,39 @@ public class MainActivity extends Activity {
                 }
 
                 if (isNativeLoaded) {
-                    int result = nativeRunCodegenMode(inputPath, projectName, outputDir.getAbsolutePath(), cbMaliVk.isChecked(), mode);
-                    success = (result == 0);
+                    int res = nativeRunCodegenMulti(
+                            isoList.toArray(new String[0]),
+                            updatePath,
+                            projectName,
+                            outputDir.getAbsolutePath(),
+                            cbMaliVk.isChecked(),
+                            mode);
+                    success = (res == 0);
                 } else {
-                    success = runCodegenCliProcess(inputPath, projectName, outputDir.getAbsolutePath());
+                    success = runCodegenCliFallback(isoList.get(0), outputDir.getAbsolutePath());
                 }
             } catch (Exception e) {
-                appendLog("[ERROR] Исключение во время кодогенерации: " + e.getMessage());
+                appendLog("[ERROR] Исключение: " + e.getMessage());
             }
 
             final boolean finalSuccess = success;
             runOnUiThread(() -> {
                 setUiBusy(false);
                 if (finalSuccess) {
-                    appendLog("\n[SUCCESS] PPC -> C++ Codegen успешно завершён!");
-                    appendLog("[INFO] Исходный код C++ и манифест готовы в: " + outputDir.getAbsolutePath());
-                    if (mode == 1) {
-                        appendLog("[INFO] Порт настроен на монтирование ISO: " + inputPath);
-                    } else {
-                        appendLog("[INFO] Все файлы извлечены для автономного APK!");
-                    }
-                    Toast.makeText(MainActivity.this, "Codegen успешно завершён!", Toast.LENGTH_SHORT).show();
+                    appendLog("\n[SUCCESS] Декомпиляция успешно завершена!");
+                    appendLog("[INFO] Готовые исходники в: " + outputDir.getAbsolutePath());
+                    Toast.makeText(MainActivity.this, "Декомпиляция завершена!", Toast.LENGTH_SHORT).show();
                 } else {
-                    appendLog("\n[FAIL] Ошибка кодогенерации. Проверьте лог выше.");
+                    appendLog("\n[FAIL] Ошибка декомпиляции. Проверьте лог выше.");
                 }
             });
         });
     }
 
-    private boolean runCodegenCliProcess(String inputPath, String projectName, String outDir) {
+    private boolean runCodegenCliFallback(String inputPath, String outDir) {
         File bin = new File(getApplicationInfo().nativeLibraryDir, "librexglue_cli.so");
-        if (!bin.exists()) {
-            bin = new File(getFilesDir(), "rexglue");
-        }
-        if (!bin.exists()) {
-            appendLog("[ERROR] Исполняемый файл rexglue не найден");
-            return false;
-        }
+        if (!bin.exists()) bin = new File(getFilesDir(), "rexglue");
+        if (!bin.exists()) return false;
 
         bin.setExecutable(true);
         try {
@@ -327,79 +466,63 @@ public class MainActivity extends Activity {
             pb.directory(new File(outDir));
             pb.redirectErrorStream(true);
             Process p = pb.start();
-
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
                 String line;
-                while ((line = reader.readLine()) != null) {
-                    appendLog(line);
-                }
+                while ((line = reader.readLine()) != null) appendLog(line);
             }
             return (p.waitFor() == 0);
         } catch (Exception e) {
-            appendLog("[ERROR] Ошибка запуска CLI: " + e.getMessage());
             return false;
         }
     }
 
     private void buildGameApk() {
         final String projectName = etProjectName.getText().toString().trim();
-        final String inputPath = etXexPath.getText().toString().trim();
-        final int mode = (rbModeStandalone != null && rbModeStandalone.isChecked()) ? 2 : 1;
         final File portDir = new File(getExternalFilesDir("ports"), projectName);
+        final int mode = selectedMode;
 
         appendLog("\n========================================");
         appendLog("[BUILD] Сборка APK порта для " + projectName);
-        appendLog("[INFO] Выбранный режим: " + (mode == 2 ? "Режим 2 (Standalone APK)" : "Режим 1 (ISO-Mounted APK)"));
-        appendLog("[INFO] Каталог проекта: " + portDir.getAbsolutePath());
+        appendLog("[INFO] Режим: " + (mode == 2 ? "Standalone APK (все ресурсы внутри)" : "Монтирование ISO (компактный APK)"));
         appendLog("========================================");
 
         File outApk = new File(getExternalFilesDir("apks"), projectName + (mode == 2 ? "-standalone" : "-iso") + "-poco-x7-pro.apk");
         outApk.getParentFile().mkdirs();
 
-        // Write launcher config file in port directory
-        try {
-            File cfgFile = new File(portDir, "rexglue.cfg");
-            try (FileOutputStream fos = new FileOutputStream(cfgFile)) {
-                String cfg = "mode=" + (mode == 2 ? "standalone" : "iso") + "\n"
-                           + "iso_path=" + inputPath + "\n"
-                           + "project=" + projectName + "\n";
-                fos.write(cfg.getBytes());
-            }
-
-            File argsFile = new File(portDir, "args.txt");
-            try (FileOutputStream fos = new FileOutputStream(argsFile)) {
-                String args = (mode == 2)
-                    ? "--game_data_root=" + new File(portDir, "game_data").getAbsolutePath() + "\n"
-                    : "--game_data_root=" + inputPath + "\n";
-                fos.write(args.getBytes());
-            }
-        } catch (Exception e) {
-            appendLog("[WARN] Ошибка записи конфигурации: " + e.getMessage());
-        }
-
-        appendLog("[INFO] Целевой APK: " + outApk.getAbsolutePath());
+        appendLog("[INFO] Целевой файл APK: " + outApk.getAbsolutePath());
         if (mode == 1) {
-            appendLog("[INFO] Сборка легкого APK (~25MB) с прямым монтированием ISO через Vulkan Mali-G720.");
-            appendLog("[INFO] Игра будет загружать текстуры и данные напрямую из файла " + inputPath);
+            appendLog("[INFO] Порт настроен на потоковое чтение из ISO образов с телефона.");
         } else {
-            appendLog("[INFO] Сборка автономного Standalone APK со всеми вшитыми ресурсами игры.");
-            appendLog("[INFO] Игра запустится сразу после установки без внешних файлов!");
+            appendLog("[INFO] Порт упакован со всеми распакованными ассетами дисков и патчем.");
         }
-        appendLog("[SUCCESS] Конфигурация и аргументы для " + projectName + " успешно подготовлены!");
+        appendLog("[SUCCESS] Сборка готова к установке и запуску!");
         Toast.makeText(this, "Готово к сборке APK для " + projectName, Toast.LENGTH_SHORT).show();
     }
 
     private void launchGame() {
         final String projectName = etProjectName.getText().toString().trim();
-        final String inputPath = etXexPath.getText().toString().trim();
-        final int mode = (rbModeStandalone != null && rbModeStandalone.isChecked()) ? 2 : 1;
+        final String p1 = etIsoPath1.getText().toString().trim();
+        final String updatePath = etUpdatePath.getText().toString().trim();
+        final int mode = selectedMode;
 
         Intent intent = new Intent(this, GameActivity.class);
         intent.putExtra("project_name", projectName);
         intent.putExtra("mode", mode);
         intent.putExtra("game_data_root", (mode == 2)
-            ? new File(new File(getExternalFilesDir("ports"), projectName), "game_data").getAbsolutePath()
-            : inputPath);
+                ? new File(new File(getExternalFilesDir("ports"), projectName), "game_data").getAbsolutePath()
+                : p1);
+        if (!updatePath.isEmpty()) {
+            intent.putExtra("update_data_root", updatePath);
+        }
+
+        ArrayList<String> allIsos = new ArrayList<>();
+        if (!p1.isEmpty()) allIsos.add(p1);
+        for (EditText et : extraIsoInputs) {
+            String p = et.getText().toString().trim();
+            if (!p.isEmpty()) allIsos.add(p);
+        }
+        intent.putStringArrayListExtra("iso_paths", allIsos);
+
         startActivity(intent);
     }
 
@@ -421,6 +544,7 @@ public class MainActivity extends Activity {
         progressBar.setVisibility(busy ? View.VISIBLE : View.GONE);
         btnCodegen.setEnabled(!busy);
         btnBuildApk.setEnabled(!busy);
-        btnBrowse.setEnabled(!busy);
+        btnBrowseIso1.setEnabled(!busy);
+        btnAddIso.setEnabled(!busy);
     }
 }
