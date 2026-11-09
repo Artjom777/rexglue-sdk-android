@@ -1,14 +1,24 @@
 package com.rexglue.app;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.PowerManager;
+import android.os.Process;
+import android.provider.DocumentsContract;
+import android.provider.MediaStore;
+import android.provider.OpenableColumns;
 import android.provider.Settings;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
@@ -25,9 +35,12 @@ import android.widget.Toast;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FileWriter;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -36,11 +49,23 @@ import java.util.concurrent.Executors;
  * ReXGlue Studio Main Activity.
  * Provides on-device Xbox 360 PPC -> C++ recompilation, multi-disc ISO and Title Update support
  * directly on POCO X7 Pro without a PC.
+ * Optimized for full MediaTek Dimensity 8400 power with LMK protection and persistent state.
  */
 public class MainActivity extends Activity {
     private static final String TAG = "ReXGlueStudio";
     private static final int REQUEST_PICK_FILE = 1001;
     private static final int REQUEST_PERMISSIONS = 1002;
+
+    private static final String PREF_NAME = "rexglue_prefs";
+    private static final String PREF_ISO_1 = "pref_iso_path_1";
+    private static final String PREF_UPDATE = "pref_update_path";
+    private static final String PREF_PROJECT = "pref_project_name";
+    private static final String PREF_MODE = "pref_mode";
+    private static final String PREF_MALI_VK = "pref_mali_vk";
+    private static final String PREF_PAGE_SIZE = "pref_page_size";
+    private static final String PREF_BIG_CORES = "pref_big_cores";
+    private static final String PREF_EXTRA_COUNT = "pref_extra_iso_count";
+    private static final String PREF_EXTRA_ISO_PREFIX = "pref_extra_iso_";
 
     private EditText etIsoPath1;
     private Button btnBrowseIso1;
@@ -72,6 +97,7 @@ public class MainActivity extends Activity {
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private boolean isNativeLoaded = false;
+    private PowerManager.WakeLock wakeLock = null;
 
     // Native JNI Declarations
     public native void nativeRegisterLogCallback();
@@ -87,9 +113,28 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        // Crash safeguard: persist state and log before unhandled exception
+        Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, ex) -> {
+            saveState();
+            try {
+                File crashLog = new File(getExternalFilesDir("logs"), "crash.log");
+                crashLog.getParentFile().mkdirs();
+                try (PrintWriter pw = new PrintWriter(new FileWriter(crashLog, true))) {
+                    pw.println("=== Crash at " + new Date() + " ===");
+                    ex.printStackTrace(pw);
+                }
+            } catch (Exception ignored) {}
+            if (defaultHandler != null) {
+                defaultHandler.uncaughtException(thread, ex);
+            }
+        });
+
         initViews();
         loadNativeLibraries();
         requestStoragePermissions();
+        requestBatteryOptimizationExemption();
+        restoreState();
         updateDeviceInfo();
     }
 
@@ -128,30 +173,50 @@ public class MainActivity extends Activity {
             pickFile();
         });
 
-        btnAddIso.setOnClickListener(v -> addExtraIsoRow());
+        btnAddIso.setOnClickListener(v -> {
+            addExtraIsoRow();
+            saveState();
+        });
 
-        btnModeIso.setOnClickListener(v -> setPortMode(1));
-        btnModeStandalone.setOnClickListener(v -> setPortMode(2));
+        btnModeIso.setOnClickListener(v -> {
+            setPortMode(1);
+            saveState();
+        });
+        btnModeStandalone.setOnClickListener(v -> {
+            setPortMode(2);
+            saveState();
+        });
+
+        cbMaliVk.setOnCheckedChangeListener((btn, isChecked) -> saveState());
+        cbPageSize.setOnCheckedChangeListener((btn, isChecked) -> saveState());
+        cbBigCores.setOnCheckedChangeListener((btn, isChecked) -> saveState());
+
+        etIsoPath1.addTextChangedListener(new SimpleTextWatcher(this::saveState));
+        etUpdatePath.addTextChangedListener(new SimpleTextWatcher(this::saveState));
+        etProjectName.addTextChangedListener(new SimpleTextWatcher(this::saveState));
 
         btnCodegen.setOnClickListener(v -> startCodegen());
         btnBuildApk.setOnClickListener(v -> buildGameApk());
         btnLaunch.setOnClickListener(v -> launchGame());
 
-        // Default path suggestion if Xbox360 or Download folders exist
-        File[] candidateDirs = new File[] {
-            new File(Environment.getExternalStorageDirectory(), "Xbox360"),
-            new File(Environment.getExternalStorageDirectory(), "Download")
-        };
-        for (File dir : candidateDirs) {
-            if (dir.exists()) {
-                File[] files = dir.listFiles((d, name) -> {
-                    String lower = name.toLowerCase();
-                    return lower.endsWith(".iso") || lower.endsWith(".xiso") || lower.endsWith(".xex");
-                });
-                if (files != null && files.length > 0) {
-                    etIsoPath1.setText(files[0].getAbsolutePath());
-                    suggestProjectName(files[0].getAbsolutePath());
-                    break;
+        // Default path suggestion if Xbox360 or Download folders exist and no saved state
+        SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+        if (!prefs.contains(PREF_ISO_1)) {
+            File[] candidateDirs = new File[] {
+                new File(Environment.getExternalStorageDirectory(), "Xbox360"),
+                new File(Environment.getExternalStorageDirectory(), "Download")
+            };
+            for (File dir : candidateDirs) {
+                if (dir.exists()) {
+                    File[] files = dir.listFiles((d, name) -> {
+                        String lower = name.toLowerCase();
+                        return lower.endsWith(".iso") || lower.endsWith(".xiso") || lower.endsWith(".xex");
+                    });
+                    if (files != null && files.length > 0) {
+                        etIsoPath1.setText(files[0].getAbsolutePath());
+                        suggestProjectName(files[0].getAbsolutePath());
+                        break;
+                    }
                 }
             }
         }
@@ -179,7 +244,11 @@ public class MainActivity extends Activity {
     }
 
     private void addExtraIsoRow() {
-        final int discIndex = extraIsoInputs.size() + 2;
+        addExtraIsoRow("");
+    }
+
+    private void addExtraIsoRow(String initialPath) {
+        int discIndex = extraIsoInputs.size() + 2;
 
         final LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -191,15 +260,6 @@ public class MainActivity extends Activity {
         row.setLayoutParams(lp);
         row.setPadding(dpToPx(14), 0, dpToPx(6), 0);
 
-        TextView icon = new TextView(this);
-        icon.setText("📁");
-        icon.setTextSize(15);
-        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        iconLp.setMarginEnd(dpToPx(8));
-        icon.setLayoutParams(iconLp);
-        row.addView(icon);
-
         final EditText et = new EditText(this);
         et.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1.0f));
         et.setBackground(null);
@@ -208,11 +268,15 @@ public class MainActivity extends Activity {
         et.setHintTextColor(Color.parseColor("#686C7B"));
         et.setTextSize(14);
         et.setSingleLine(true);
+        if (initialPath != null && !initialPath.isEmpty()) {
+            et.setText(initialPath);
+        }
+        et.addTextChangedListener(new SimpleTextWatcher(this::saveState));
         row.addView(et);
         extraIsoInputs.add(et);
 
         Button btnBrowse = new Button(this);
-        btnBrowse.setText("📁 Обзор");
+        btnBrowse.setText("Обзор");
         btnBrowse.setBackgroundResource(R.drawable.bg_pill_button);
         btnBrowse.setTextColor(Color.parseColor("#0F1C3A"));
         btnBrowse.setTextSize(13);
@@ -230,9 +294,9 @@ public class MainActivity extends Activity {
         row.addView(btnBrowse);
 
         TextView btnRemove = new TextView(this);
-        btnRemove.setText("✕");
+        btnRemove.setText("X");
         btnRemove.setTextColor(Color.parseColor("#ADC6FF"));
-        btnRemove.setTextSize(16);
+        btnRemove.setTextSize(15);
         btnRemove.setTypeface(null, Typeface.BOLD);
         btnRemove.setPadding(dpToPx(10), dpToPx(6), dpToPx(6), dpToPx(6));
         btnRemove.setClickable(true);
@@ -240,6 +304,7 @@ public class MainActivity extends Activity {
         btnRemove.setOnClickListener(v -> {
             containerExtraIsos.removeView(row);
             extraIsoInputs.remove(et);
+            saveState();
         });
         row.addView(btnRemove);
 
@@ -282,6 +347,19 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+                    Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                }
+            } catch (Exception ignored) {}
+        }
+    }
+
     private void updateDeviceInfo() {
         if (isNativeLoaded) {
             try {
@@ -304,20 +382,54 @@ public class MainActivity extends Activity {
         if (requestCode == REQUEST_PICK_FILE && resultCode == RESULT_OK && data != null) {
             Uri uri = data.getData();
             if (uri != null) {
-                String path = resolveUriToPath(uri);
-                if (currentPickTarget == 0) {
-                    etIsoPath1.setText(path);
-                    suggestProjectName(path);
-                    inspectAndLogIso(path, "Диск 1");
-                } else if (currentPickTarget == -1) {
-                    etUpdatePath.setText(path);
-                    appendLog("[TU] Выбран Title Update: " + path);
+                final String resolvedPath = resolveImmediatePath(uri);
+                final int target = currentPickTarget;
+
+                // 1. Immediately determine and set path in UI so user sees it without delay
+                if (target == 0) {
+                    etIsoPath1.setText(resolvedPath);
+                    suggestProjectName(resolvedPath);
+                } else if (target == -1) {
+                    etUpdatePath.setText(resolvedPath);
                 } else {
-                    int idx = currentPickTarget - 1;
+                    int idx = target - 1;
                     if (idx >= 0 && idx < extraIsoInputs.size()) {
-                        extraIsoInputs.get(idx).setText(path);
-                        inspectAndLogIso(path, "Диск " + (idx + 2));
+                        extraIsoInputs.get(idx).setText(resolvedPath);
                     }
+                }
+                saveState();
+
+                // 2. Check if file is already accessible directly on storage or requires background caching
+                final File fileOnDisk = new File(resolvedPath);
+                final String label = (target == 0) ? "Диск 1" : (target == -1) ? "Title Update" : ("Диск " + (target + 1));
+
+                if (fileOnDisk.exists()) {
+                    if (target != -1) {
+                        inspectAndLogIso(resolvedPath, label);
+                    } else {
+                        appendLog("[TU] Выбран Title Update: " + resolvedPath);
+                    }
+                } else {
+                    // Content URI from external provider: copy in background thread after path is already set
+                    appendLog("[CACHE] Загрузка файла в локальное хранилище: " + fileOnDisk.getName() + "...");
+                    progressBar.setVisibility(View.VISIBLE);
+                    executor.execute(() -> {
+                        boolean ok = copyUriToFile(uri, fileOnDisk);
+                        runOnUiThread(() -> {
+                            progressBar.setVisibility(View.GONE);
+                            if (ok) {
+                                appendLog("[CACHE] Файл успешно загружен: " + resolvedPath);
+                                if (target != -1) {
+                                    inspectAndLogIso(resolvedPath, label);
+                                } else {
+                                    appendLog("[TU] Выбран Title Update: " + resolvedPath);
+                                }
+                                saveState();
+                            } else {
+                                appendLog("[ERROR] Не удалось скопировать файл из выбранного источника");
+                            }
+                        });
+                    });
                 }
             }
         }
@@ -352,32 +464,215 @@ public class MainActivity extends Activity {
         etProjectName.setText(name);
     }
 
-    private String resolveUriToPath(Uri uri) {
+    /**
+     * Resolves the real filesystem path immediately without copying multi-GB data.
+     * Checks direct storage, DocumentsContract, and MediaStore.
+     */
+    private String resolveImmediatePath(Uri uri) {
+        if (uri == null) return "";
+
         if ("file".equalsIgnoreCase(uri.getScheme())) {
             return uri.getPath();
         }
-        try {
+
+        if ("content".equalsIgnoreCase(uri.getScheme())) {
+            // Check DocumentsContract
+            try {
+                if (DocumentsContract.isDocumentUri(this, uri)) {
+                    String docId = DocumentsContract.getDocumentId(uri);
+                    String authority = uri.getAuthority();
+
+                    if ("com.android.externalstorage.documents".equals(authority) && docId != null) {
+                        String[] parts = docId.split(":");
+                        String type = parts[0];
+                        String relPath = parts.length > 1 ? parts[1] : "";
+
+                        if ("primary".equalsIgnoreCase(type)) {
+                            File f = new File(Environment.getExternalStorageDirectory(), relPath);
+                            if (f.exists()) return f.getAbsolutePath();
+                            File fEmulated = new File("/storage/emulated/0", relPath);
+                            if (fEmulated.exists()) return fEmulated.getAbsolutePath();
+                        } else {
+                            File fSec = new File("/storage/" + type + "/" + relPath);
+                            if (fSec.exists()) return fSec.getAbsolutePath();
+                        }
+                    } else if ("com.android.providers.downloads.documents".equals(authority) && docId != null) {
+                        if (docId.startsWith("raw:")) {
+                            String rawPath = docId.substring(4);
+                            if (new File(rawPath).exists()) return rawPath;
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+
+            // Check MediaStore _data column
+            try {
+                String[] proj = { MediaStore.MediaColumns.DATA };
+                try (Cursor cursor = getContentResolver().query(uri, proj, null, null, null)) {
+                    if (cursor != null && cursor.moveToFirst()) {
+                        int idx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA);
+                        if (idx != -1) {
+                            String directPath = cursor.getString(idx);
+                            if (directPath != null && new File(directPath).exists()) {
+                                return directPath;
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+
+            // Direct path not reachable directly: calculate target cache destination
             String displayName = "game.iso";
-            try (android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+            try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
                 if (cursor != null && cursor.moveToFirst()) {
-                    int nameIdx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                    int nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
                     if (nameIdx >= 0) displayName = cursor.getString(nameIdx);
                 }
-            }
+            } catch (Exception ignored) {}
+
             File cacheFile = new File(getExternalFilesDir("game_cache"), displayName);
-            cacheFile.getParentFile().mkdirs();
+            return cacheFile.getAbsolutePath();
+        }
+
+        return uri.getPath();
+    }
+
+    private boolean copyUriToFile(Uri uri, File dest) {
+        try {
+            dest.getParentFile().mkdirs();
             try (InputStream is = getContentResolver().openInputStream(uri);
-                 FileOutputStream fos = new FileOutputStream(cacheFile)) {
-                byte[] buffer = new byte[65536];
+                 FileOutputStream fos = new FileOutputStream(dest)) {
+                if (is == null) return false;
+                byte[] buffer = new byte[1048576]; // 1MB buffer for fast I/O
                 int read;
                 while ((read = is.read(buffer)) != -1) {
                     fos.write(buffer, 0, read);
                 }
             }
-            return cacheFile.getAbsolutePath();
+            return true;
         } catch (Exception e) {
-            return uri.getPath();
+            Log.e(TAG, "copyUriToFile error: " + e.getMessage());
+            return false;
         }
+    }
+
+    private void saveState() {
+        try {
+            SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+            SharedPreferences.Editor editor = prefs.edit();
+
+            if (etIsoPath1 != null) editor.putString(PREF_ISO_1, etIsoPath1.getText().toString().trim());
+            if (etUpdatePath != null) editor.putString(PREF_UPDATE, etUpdatePath.getText().toString().trim());
+            if (etProjectName != null) editor.putString(PREF_PROJECT, etProjectName.getText().toString().trim());
+            editor.putInt(PREF_MODE, selectedMode);
+
+            if (cbMaliVk != null) editor.putBoolean(PREF_MALI_VK, cbMaliVk.isChecked());
+            if (cbPageSize != null) editor.putBoolean(PREF_PAGE_SIZE, cbPageSize.isChecked());
+            if (cbBigCores != null) editor.putBoolean(PREF_BIG_CORES, cbBigCores.isChecked());
+
+            editor.putInt(PREF_EXTRA_COUNT, extraIsoInputs.size());
+            for (int i = 0; i < extraIsoInputs.size(); i++) {
+                editor.putString(PREF_EXTRA_ISO_PREFIX + i, extraIsoInputs.get(i).getText().toString().trim());
+            }
+
+            editor.apply();
+        } catch (Exception e) {
+            Log.w(TAG, "saveState error: " + e.getMessage());
+        }
+    }
+
+    private void restoreState() {
+        try {
+            SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+
+            String iso1 = prefs.getString(PREF_ISO_1, "");
+            if (!iso1.isEmpty()) {
+                etIsoPath1.setText(iso1);
+            }
+
+            String update = prefs.getString(PREF_UPDATE, "");
+            if (!update.isEmpty()) {
+                etUpdatePath.setText(update);
+            }
+
+            String proj = prefs.getString(PREF_PROJECT, "");
+            if (!proj.isEmpty()) {
+                etProjectName.setText(proj);
+            }
+
+            int mode = prefs.getInt(PREF_MODE, 1);
+            setPortMode(mode);
+
+            if (cbMaliVk != null) cbMaliVk.setChecked(prefs.getBoolean(PREF_MALI_VK, true));
+            if (cbPageSize != null) cbPageSize.setChecked(prefs.getBoolean(PREF_PAGE_SIZE, true));
+            if (cbBigCores != null) cbBigCores.setChecked(prefs.getBoolean(PREF_BIG_CORES, true));
+
+            int extraCount = prefs.getInt(PREF_EXTRA_COUNT, 0);
+            containerExtraIsos.removeAllViews();
+            extraIsoInputs.clear();
+            for (int i = 0; i < extraCount; i++) {
+                String extraPath = prefs.getString(PREF_EXTRA_ISO_PREFIX + i, "");
+                addExtraIsoRow(extraPath);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "restoreState error: " + e.getMessage());
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        saveState();
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        saveState();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        saveState();
+        stopFullPowerService();
+    }
+
+    private void startFullPowerService() {
+        try {
+            Intent serviceIntent = new Intent(this, CodegenForegroundService.class);
+            serviceIntent.setAction(CodegenForegroundService.ACTION_START);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent);
+            } else {
+                startService(serviceIntent);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "startFullPowerService warning: " + e.getMessage());
+        }
+
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null && (wakeLock == null || !wakeLock.isHeld())) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ReXGlue::FullPowerLocal");
+                wakeLock.acquire(120 * 60 * 1000L);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void stopFullPowerService() {
+        if (wakeLock != null && wakeLock.isHeld()) {
+            try {
+                wakeLock.release();
+            } catch (Exception ignored) {}
+            wakeLock = null;
+        }
+
+        try {
+            Intent serviceIntent = new Intent(this, CodegenForegroundService.class);
+            serviceIntent.setAction(CodegenForegroundService.ACTION_STOP);
+            startService(serviceIntent);
+        } catch (Exception ignored) {}
     }
 
     private void startCodegen() {
@@ -406,8 +701,11 @@ public class MainActivity extends Activity {
         outputDir.mkdirs();
 
         setUiBusy(true);
+        startFullPowerService();
+
         appendLog("\n========================================");
         appendLog("[START] Запуск декомпиляции для " + projectName);
+        appendLog("[PERF] Режим полной мощности активен: LMK защита включена");
         appendLog("[INFO] Прикреплено ISO дисков: " + isoList.size());
         for (int i = 0; i < isoList.size(); i++) {
             appendLog("[INFO]   Диск " + (i + 1) + ": " + isoList.get(i));
@@ -421,6 +719,9 @@ public class MainActivity extends Activity {
         executor.execute(() -> {
             boolean success = false;
             try {
+                // Elevate thread scheduling priority to foreground
+                Process.setThreadPriority(Process.THREAD_PRIORITY_FOREGROUND);
+
                 if (cbBigCores.isChecked()) {
                     System.setProperty("REX_THREAD_BIG_CORES", "1");
                 }
@@ -439,6 +740,8 @@ public class MainActivity extends Activity {
                 }
             } catch (Exception e) {
                 appendLog("[ERROR] Исключение: " + e.getMessage());
+            } finally {
+                stopFullPowerService();
             }
 
             final boolean finalSuccess = success;
@@ -465,7 +768,7 @@ public class MainActivity extends Activity {
             ProcessBuilder pb = new ProcessBuilder(bin.getAbsolutePath(), "--force", "--log-level", "info", "codegen", inputPath);
             pb.directory(new File(outDir));
             pb.redirectErrorStream(true);
-            Process p = pb.start();
+            java.lang.Process p = pb.start();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) appendLog(line);
@@ -480,6 +783,8 @@ public class MainActivity extends Activity {
         final String projectName = etProjectName.getText().toString().trim();
         final File portDir = new File(getExternalFilesDir("ports"), projectName);
         final int mode = selectedMode;
+
+        startFullPowerService();
 
         appendLog("\n========================================");
         appendLog("[BUILD] Сборка APK порта для " + projectName);
@@ -497,6 +802,8 @@ public class MainActivity extends Activity {
         }
         appendLog("[SUCCESS] Сборка готова к установке и запуску!");
         Toast.makeText(this, "Готово к сборке APK для " + projectName, Toast.LENGTH_SHORT).show();
+
+        stopFullPowerService();
     }
 
     private void launchGame() {
@@ -546,5 +853,13 @@ public class MainActivity extends Activity {
         btnBuildApk.setEnabled(!busy);
         btnBrowseIso1.setEnabled(!busy);
         btnAddIso.setEnabled(!busy);
+    }
+
+    private static class SimpleTextWatcher implements TextWatcher {
+        private final Runnable onChange;
+        SimpleTextWatcher(Runnable onChange) { this.onChange = onChange; }
+        @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+        @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+        @Override public void afterTextChanged(Editable s) { if (onChange != null) onChange.run(); }
     }
 }

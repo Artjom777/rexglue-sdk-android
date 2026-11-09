@@ -61,13 +61,6 @@
                 android:paddingStart="14dp"
                 android:paddingEnd="6dp">
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="📁"
-                    android:textSize="15sp"
-                    android:layout_marginEnd="8dp" />
-
                 <EditText
                     android:id="@+id/et_xex_path"
                     android:layout_width="0dp"
@@ -85,7 +78,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="36dp"
                     android:background="@drawable/bg_pill_button"
-                    android:text="📁 Обзор"
+                    android:text="Обзор"
                     android:textColor="#0F1C3A"
                     android:textSize="13sp"
                     android:textStyle="bold"
@@ -145,13 +138,6 @@
                 android:paddingStart="14dp"
                 android:paddingEnd="6dp">
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="📦"
-                    android:textSize="15sp"
-                    android:layout_marginEnd="8dp" />
-
                 <EditText
                     android:id="@+id/et_update_path"
                     android:layout_width="0dp"
@@ -169,7 +155,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="36dp"
                     android:background="@drawable/bg_pill_button"
-                    android:text="📁 Обзор"
+                    android:text="Обзор"
                     android:textColor="#0F1C3A"
                     android:textSize="13sp"
                     android:textStyle="bold"
@@ -234,14 +220,6 @@
                     android:focusable="true">
 
                     <TextView
-                        android:id="@+id/tv_mode_iso_icon"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="🔘"
-                        android:textSize="12sp"
-                        android:layout_marginEnd="6dp" />
-
-                    <TextView
                         android:id="@+id/tv_mode_iso_text"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
@@ -263,14 +241,6 @@
                     android:paddingEnd="14dp"
                     android:clickable="true"
                     android:focusable="true">
-
-                    <TextView
-                        android:id="@+id/tv_mode_standalone_icon"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="📄"
-                        android:textSize="12sp"
-                        android:layout_marginEnd="6dp" />
 
                     <TextView
                         android:id="@+id/tv_mode_standalone_text"

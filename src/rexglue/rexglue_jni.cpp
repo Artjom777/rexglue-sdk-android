@@ -17,6 +17,10 @@
 #include <sstream>
 #include <fstream>
 #include <unistd.h>
+#include <sys/resource.h>
+#if defined(__ANDROID__)
+#include <malloc.h>
+#endif
 #include <android/log.h>
 
 #include "commands/codegen_command.h"
@@ -186,6 +190,13 @@ static jint RunCodegenMultiInternal(
     SendLogToJava("[ERROR] No ISO images or output directory provided!");
     return -1;
   }
+
+  // Elevate Linux thread scheduling priority for full Dimensity 8400 CPU performance
+  setpriority(PRIO_PROCESS, 0, -10);
+
+#if defined(__ANDROID__) && defined(M_DECAY_TIME)
+  mallopt(M_DECAY_TIME, 1);
+#endif
 
   SendLogToJava("\n========================================");
   SendLogToJava(("[INFO] ReXGlue Studio Project: " + project_name).c_str());
