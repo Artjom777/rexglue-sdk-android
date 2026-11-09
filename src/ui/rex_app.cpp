@@ -208,7 +208,7 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
     return false;
   }
-  if (!std::filesystem::is_directory(paths.game_data_root)) {
+  if (!std::filesystem::exists(paths.game_data_root)) {
     auto msg = fmt::format("--game_data_root does not exist: {}", paths.game_data_root.string());
     REXLOG_ERROR("{}", msg);
     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
@@ -275,12 +275,23 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
     }
     std::string host_tail{tail};
     std::replace(host_tail.begin(), host_tail.end(), '\\', '/');
-    auto xex_host = paths.game_data_root / host_tail;
-    if (!std::filesystem::is_regular_file(xex_host)) {
-      auto msg = fmt::format("Entrypoint XEX not found: {}", xex_host.string());
-      REXLOG_ERROR("{}", msg);
-      rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
-      return false;
+    if (std::filesystem::is_directory(paths.game_data_root)) {
+      auto xex_host = paths.game_data_root / host_tail;
+      if (!std::filesystem::is_regular_file(xex_host)) {
+        auto msg = fmt::format("Entrypoint XEX not found: {}", xex_host.string());
+        REXLOG_ERROR("{}", msg);
+        rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+        return false;
+      }
+    } else {
+      // Mounted from ISO disc image - verify entry exists in VFS
+      if (!runtime_->file_system() || !runtime_->file_system()->ResolvePath(xex_image)) {
+        auto msg = fmt::format("Entrypoint XEX '{}' not found in disc image: {}", xex_image,
+                               paths.game_data_root.string());
+        REXLOG_ERROR("{}", msg);
+        rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+        return false;
+      }
     }
   }
 

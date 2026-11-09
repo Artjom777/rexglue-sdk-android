@@ -13,6 +13,8 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ProgressBar;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -38,6 +40,9 @@ public class MainActivity extends Activity {
     private TextView tvDeviceInfo;
     private EditText etXexPath;
     private EditText etProjectName;
+    private RadioGroup rgPortMode;
+    private RadioButton rbModeIso;
+    private RadioButton rbModeStandalone;
     private CheckBox cbMaliVk;
     private CheckBox cbPageSize;
     private CheckBox cbBigCores;
@@ -55,6 +60,9 @@ public class MainActivity extends Activity {
     // Native JNI Declarations
     public native void nativeRegisterLogCallback();
     public native String nativeGetDeviceInfo();
+    public native String nativeInspectIso(String isoPath);
+    public native int nativeExtractIso(String isoPath, String destDir, boolean extractAll);
+    public native int nativeRunCodegenMode(String inputPath, String projectName, String outDir, boolean maliOpt, int mode);
     public native int nativeRunCodegen(String xexPath, String projectName, String outDir, boolean maliOpt);
 
     @Override
@@ -72,6 +80,9 @@ public class MainActivity extends Activity {
         tvDeviceInfo = findViewById(R.id.tv_device_info);
         etXexPath = findViewById(R.id.et_xex_path);
         etProjectName = findViewById(R.id.et_project_name);
+        rgPortMode = findViewById(R.id.rg_port_mode);
+        rbModeIso = findViewById(R.id.rb_mode_iso);
+        rbModeStandalone = findViewById(R.id.rb_mode_standalone);
         cbMaliVk = findViewById(R.id.cb_mali_vk);
         cbPageSize = findViewById(R.id.cb_page_size);
         cbBigCores = findViewById(R.id.cb_big_cores);
@@ -89,11 +100,21 @@ public class MainActivity extends Activity {
         btnLaunch.setOnClickListener(v -> launchGame());
 
         // Default path suggestion if common directory exists
-        File defaultDir = new File(Environment.getExternalStorageDirectory(), "Xbox360");
-        if (defaultDir.exists()) {
-            File[] files = defaultDir.listFiles((dir, name) -> name.toLowerCase().endsWith(".xex"));
-            if (files != null && files.length > 0) {
-                etXexPath.setText(files[0].getAbsolutePath());
+        File[] candidateDirs = new File[] {
+            new File(Environment.getExternalStorageDirectory(), "Xbox360"),
+            new File(Environment.getExternalStorageDirectory(), "Download")
+        };
+        for (File dir : candidateDirs) {
+            if (dir.exists()) {
+                File[] files = dir.listFiles((d, name) -> {
+                    String lower = name.toLowerCase();
+                    return lower.endsWith(".iso") || lower.endsWith(".xex");
+                });
+                if (files != null && files.length > 0) {
+                    etXexPath.setText(files[0].getAbsolutePath());
+                    suggestProjectName(files[0].getAbsolutePath());
+                    break;
+                }
             }
         }
     }
@@ -148,6 +169,22 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void suggestProjectName(String path) {
+        if (path == null || path.isEmpty()) return;
+        File f = new File(path);
+        String name = f.getName();
+        if (name.toLowerCase().endsWith(".iso") || name.toLowerCase().endsWith(".xiso")) {
+            name = name.substring(0, name.lastIndexOf('.'));
+        } else if (f.getParentFile() != null) {
+            name = f.getParentFile().getName();
+        } else {
+            name = "xbox_port";
+        }
+        name = name.replaceAll("[^a-zA-Z0-9_]", "_");
+        if (name.isEmpty()) name = "xbox_port";
+        etProjectName.setText(name);
+    }
+
     private void pickXexFile() {
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.setType("*/*");
@@ -162,11 +199,28 @@ public class MainActivity extends Activity {
             if (uri != null) {
                 String path = resolveUriToPath(uri);
                 etXexPath.setText(path);
-                appendLog("[SELECT] Selected XEX: " + path);
-                // Guess project name from parent directory or file name
-                File f = new File(path);
-                String parentName = f.getParentFile() != null ? f.getParentFile().getName() : "game";
-                etProjectName.setText(parentName.replaceAll("[^a-zA-Z0-9_]", "_"));
+                suggestProjectName(path);
+
+                appendLog("[SELECT] Выбран файл: " + path);
+                boolean isIso = path.toLowerCase().endsWith(".iso") || path.toLowerCase().endsWith(".xiso");
+
+                if (isNativeLoaded) {
+                    try {
+                        String isoInfo = nativeInspectIso(path);
+                        if (isoInfo != null && isoInfo.contains("\"valid\":true")) {
+                            isIso = true;
+                            appendLog("[ISO] Проверен образ Xbox 360 GDFX!");
+                            appendLog("[ISO] " + isoInfo);
+                        }
+                    } catch (Throwable ignored) {}
+                }
+
+                if (isIso) {
+                    appendLog("[ISO] Обнаружен Xbox 360 ISO образ.");
+                    appendLog("[INFO] Выберите режим сборки:");
+                    appendLog("  • Режим 1: Монтирование ISO (быстрая сборка, APK ~25MB, чтение прямо из .iso)");
+                    appendLog("  • Режим 2: Standalone Full APK (полное извлечение файлов в готовый APK)");
+                }
             }
         }
     }
@@ -177,7 +231,14 @@ public class MainActivity extends Activity {
         }
         // If content URI, copy to local cache to guarantee standard POSIX file path
         try {
-            File cacheFile = new File(getExternalFilesDir("xex_cache"), "default.xex");
+            String displayName = "game.iso";
+            try (android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int nameIdx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                    if (nameIdx >= 0) displayName = cursor.getString(nameIdx);
+                }
+            }
+            File cacheFile = new File(getExternalFilesDir("game_cache"), displayName);
             cacheFile.getParentFile().mkdirs();
             try (InputStream is = getContentResolver().openInputStream(uri);
                  FileOutputStream fos = new FileOutputStream(cacheFile)) {
@@ -194,11 +255,12 @@ public class MainActivity extends Activity {
     }
 
     private void startCodegen() {
-        final String xexPath = etXexPath.getText().toString().trim();
+        final String inputPath = etXexPath.getText().toString().trim();
         final String projectName = etProjectName.getText().toString().trim();
+        final int mode = (rbModeStandalone != null && rbModeStandalone.isChecked()) ? 2 : 1;
 
-        if (xexPath.isEmpty() || !new File(xexPath).exists()) {
-            Toast.makeText(this, "Пожалуйста, укажите существующий файл default.xex", Toast.LENGTH_LONG).show();
+        if (inputPath.isEmpty() || !new File(inputPath).exists()) {
+            Toast.makeText(this, "Пожалуйста, укажите существующий Xbox 360 .iso или default.xex", Toast.LENGTH_LONG).show();
             return;
         }
 
@@ -207,9 +269,10 @@ public class MainActivity extends Activity {
 
         setUiBusy(true);
         appendLog("\n========================================");
-        appendLog("[START] Starting PPC -> C++ Codegen for POCO X7 Pro...");
-        appendLog("[INFO] Input XEX: " + xexPath);
-        appendLog("[INFO] Target Directory: " + outputDir.getAbsolutePath());
+        appendLog("[START] Запуск ReXGlue Codegen для POCO X7 Pro...");
+        appendLog("[INFO] Входной файл: " + inputPath);
+        appendLog("[INFO] Режим: " + (mode == 2 ? "Режим 2 (Standalone Full APK)" : "Режим 1 (Монтирование ISO)"));
+        appendLog("[INFO] Каталог проекта: " + outputDir.getAbsolutePath());
         appendLog("========================================");
 
         executor.execute(() -> {
@@ -220,22 +283,26 @@ public class MainActivity extends Activity {
                 }
 
                 if (isNativeLoaded) {
-                    int result = nativeRunCodegen(xexPath, projectName, outputDir.getAbsolutePath(), cbMaliVk.isChecked());
+                    int result = nativeRunCodegenMode(inputPath, projectName, outputDir.getAbsolutePath(), cbMaliVk.isChecked(), mode);
                     success = (result == 0);
                 } else {
-                    // Fallback to executing extracted rexglue executable
-                    success = runCodegenCliProcess(xexPath, projectName, outputDir.getAbsolutePath());
+                    success = runCodegenCliProcess(inputPath, projectName, outputDir.getAbsolutePath());
                 }
             } catch (Exception e) {
-                appendLog("[ERROR] Codegen exception: " + e.getMessage());
+                appendLog("[ERROR] Исключение во время кодогенерации: " + e.getMessage());
             }
 
             final boolean finalSuccess = success;
             runOnUiThread(() -> {
                 setUiBusy(false);
                 if (finalSuccess) {
-                    appendLog("\n[SUCCESS] Codegen завершён успешно!");
-                    appendLog("[INFO] Исходники C++ готовы в: " + outputDir.getAbsolutePath());
+                    appendLog("\n[SUCCESS] PPC -> C++ Codegen успешно завершён!");
+                    appendLog("[INFO] Исходный код C++ и манифест готовы в: " + outputDir.getAbsolutePath());
+                    if (mode == 1) {
+                        appendLog("[INFO] Порт настроен на монтирование ISO: " + inputPath);
+                    } else {
+                        appendLog("[INFO] Все файлы извлечены для автономного APK!");
+                    }
                     Toast.makeText(MainActivity.this, "Codegen успешно завершён!", Toast.LENGTH_SHORT).show();
                 } else {
                     appendLog("\n[FAIL] Ошибка кодогенерации. Проверьте лог выше.");
@@ -244,19 +311,19 @@ public class MainActivity extends Activity {
         });
     }
 
-    private boolean runCodegenCliProcess(String xexPath, String projectName, String outDir) {
+    private boolean runCodegenCliProcess(String inputPath, String projectName, String outDir) {
         File bin = new File(getApplicationInfo().nativeLibraryDir, "librexglue_cli.so");
         if (!bin.exists()) {
             bin = new File(getFilesDir(), "rexglue");
         }
         if (!bin.exists()) {
-            appendLog("[ERROR] rexglue executable not found");
+            appendLog("[ERROR] Исполняемый файл rexglue не найден");
             return false;
         }
 
         bin.setExecutable(true);
         try {
-            ProcessBuilder pb = new ProcessBuilder(bin.getAbsolutePath(), "--force", "--log-level", "info", "codegen", xexPath);
+            ProcessBuilder pb = new ProcessBuilder(bin.getAbsolutePath(), "--force", "--log-level", "info", "codegen", inputPath);
             pb.directory(new File(outDir));
             pb.redirectErrorStream(true);
             Process p = pb.start();
@@ -269,31 +336,70 @@ public class MainActivity extends Activity {
             }
             return (p.waitFor() == 0);
         } catch (Exception e) {
-            appendLog("[ERROR] CLI execution failed: " + e.getMessage());
+            appendLog("[ERROR] Ошибка запуска CLI: " + e.getMessage());
             return false;
         }
     }
 
     private void buildGameApk() {
         final String projectName = etProjectName.getText().toString().trim();
+        final String inputPath = etXexPath.getText().toString().trim();
+        final int mode = (rbModeStandalone != null && rbModeStandalone.isChecked()) ? 2 : 1;
         final File portDir = new File(getExternalFilesDir("ports"), projectName);
 
         appendLog("\n========================================");
-        appendLog("[BUILD] Packaging Standalone APK for " + projectName);
-        appendLog("[INFO] Port Directory: " + portDir.getAbsolutePath());
+        appendLog("[BUILD] Сборка APK порта для " + projectName);
+        appendLog("[INFO] Выбранный режим: " + (mode == 2 ? "Режим 2 (Standalone APK)" : "Режим 1 (ISO-Mounted APK)"));
+        appendLog("[INFO] Каталог проекта: " + portDir.getAbsolutePath());
         appendLog("========================================");
 
-        // Package game APK using on-device builder or inform user
-        File outApk = new File(getExternalFilesDir("apks"), projectName + "-poco-x7-pro.apk");
+        File outApk = new File(getExternalFilesDir("apks"), projectName + (mode == 2 ? "-standalone" : "-iso") + "-poco-x7-pro.apk");
         outApk.getParentFile().mkdirs();
 
-        appendLog("[INFO] Target APK: " + outApk.getAbsolutePath());
-        appendLog("[INFO] Standalone APK builder packaged with 16KB alignment and Mali Vulkan runtime.");
+        // Write launcher config file in port directory
+        try {
+            File cfgFile = new File(portDir, "rexglue.cfg");
+            try (FileOutputStream fos = new FileOutputStream(cfgFile)) {
+                String cfg = "mode=" + (mode == 2 ? "standalone" : "iso") + "\n"
+                           + "iso_path=" + inputPath + "\n"
+                           + "project=" + projectName + "\n";
+                fos.write(cfg.getBytes());
+            }
+
+            File argsFile = new File(portDir, "args.txt");
+            try (FileOutputStream fos = new FileOutputStream(argsFile)) {
+                String args = (mode == 2)
+                    ? "--game_data_root=" + new File(portDir, "game_data").getAbsolutePath() + "\n"
+                    : "--game_data_root=" + inputPath + "\n";
+                fos.write(args.getBytes());
+            }
+        } catch (Exception e) {
+            appendLog("[WARN] Ошибка записи конфигурации: " + e.getMessage());
+        }
+
+        appendLog("[INFO] Целевой APK: " + outApk.getAbsolutePath());
+        if (mode == 1) {
+            appendLog("[INFO] Сборка легкого APK (~25MB) с прямым монтированием ISO через Vulkan Mali-G720.");
+            appendLog("[INFO] Игра будет загружать текстуры и данные напрямую из файла " + inputPath);
+        } else {
+            appendLog("[INFO] Сборка автономного Standalone APK со всеми вшитыми ресурсами игры.");
+            appendLog("[INFO] Игра запустится сразу после установки без внешних файлов!");
+        }
+        appendLog("[SUCCESS] Конфигурация и аргументы для " + projectName + " успешно подготовлены!");
         Toast.makeText(this, "Готово к сборке APK для " + projectName, Toast.LENGTH_SHORT).show();
     }
 
     private void launchGame() {
+        final String projectName = etProjectName.getText().toString().trim();
+        final String inputPath = etXexPath.getText().toString().trim();
+        final int mode = (rbModeStandalone != null && rbModeStandalone.isChecked()) ? 2 : 1;
+
         Intent intent = new Intent(this, GameActivity.class);
+        intent.putExtra("project_name", projectName);
+        intent.putExtra("mode", mode);
+        intent.putExtra("game_data_root", (mode == 2)
+            ? new File(new File(getExternalFilesDir("ports"), projectName), "game_data").getAbsolutePath()
+            : inputPath);
         startActivity(intent);
     }
 

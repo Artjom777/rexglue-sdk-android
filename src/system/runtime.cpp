@@ -11,6 +11,7 @@
 
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
+#include <rex/filesystem/devices/disc_image_device.h>
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/filesystem/devices/null_device.h>
 #include <rex/filesystem/vfs.h>
@@ -305,14 +306,27 @@ bool Runtime::SetupVfs() {
 
   // Mount game_data_root as \Device\Harddisk0\Partition1
   auto mount_path = "\\Device\\Harddisk0\\Partition1";
-  auto device = std::make_unique<rex::filesystem::HostPathDevice>(
-      mount_path, abs_game_root, !REXCVAR_GET(allow_game_relative_writes));
+  std::unique_ptr<rex::filesystem::Device> device;
+
+  std::string ext = abs_game_root.extension().string();
+  for (auto& c : ext) c = static_cast<char>(std::tolower(c));
+
+  if (rex::filesystem::DiscImageDevice::IsDiscImage(abs_game_root) || ext == ".iso" ||
+      ext == ".xiso") {
+    REXSYS_INFO("Runtime::SetupVfs: Mounting Xbox 360 ISO disc image: {}", abs_game_root.string());
+    device = std::make_unique<rex::filesystem::DiscImageDevice>(mount_path, abs_game_root);
+  } else {
+    device = std::make_unique<rex::filesystem::HostPathDevice>(
+        mount_path, abs_game_root, !REXCVAR_GET(allow_game_relative_writes));
+  }
+
   if (!device->Initialize()) {
-    REXSYS_ERROR("Runtime::SetupVfs: Failed to initialize host path device");
+    REXSYS_ERROR("Runtime::SetupVfs: Failed to initialize file device ({})",
+                 abs_game_root.string());
     return false;
   }
   if (!file_system_->RegisterDevice(std::move(device))) {
-    REXSYS_ERROR("Runtime::SetupVfs: Failed to register host path device");
+    REXSYS_ERROR("Runtime::SetupVfs: Failed to register file device");
     return false;
   }
   REXSYS_DEBUG("  Mounted {} at {}", abs_game_root.string(), mount_path);

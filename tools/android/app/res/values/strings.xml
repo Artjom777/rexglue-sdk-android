@@ -4,9 +4,12 @@
     <string name="title_porter">ReXGlue Studio — Xbox 360 Porting Toolkit</string>
     <string name="target_device">POCO X7 Pro (MediaTek Dimensity / Mali-G720 / 16KB Pages)</string>
     <string name="section_project">Настройка проекта (Project Setup)</string>
-    <string name="label_xex_path">Путь к default.xex (XEX File Path):</string>
-    <string name="btn_select_file">Выбрать XEX / Browse File</string>
+    <string name="label_xex_path">Путь к игре (Xbox 360 .iso образ или default.xex):</string>
+    <string name="btn_select_file">Обзор / Browse</string>
     <string name="label_project_name">Имя проекта (Project Name):</string>
+    <string name="section_port_mode">Режим сборки порта (Port Mode)</string>
+    <string name="mode_iso">Режим 1: Монтирование ISO (APK ~25MB, стриминг из .iso файла)</string>
+    <string name="mode_standalone">Режим 2: Готовый Standalone APK (все файлы вшиты, без внешних файлов)</string>
     <string name="section_mali">Оптимизации MediaTek &amp; Mali-G720</string>
     <string name="opt_mali_vk">Mali Vulkan Compatibility (Bypass Geometry Shaders)</string>
     <string name="opt_page_size">16KB Page Alignment (Android 15 / HyperOS)</string>

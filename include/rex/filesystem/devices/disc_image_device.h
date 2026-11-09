@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -38,9 +39,26 @@ class DiscImageDevice : public Device {
   };
 
   const Entry* root() const { return root_entry_.get(); }
+  Entry* root_entry() { return root_entry_.get(); }
   uint64_t file_count() const { return file_count_; }
   uint64_t total_file_size() const { return total_file_size_; }
   const DiscInfo& disc_info() const { return disc_info_; }
+  memory::MappedMemory* mmap() const { return mmap_.get(); }
+
+  // Extract a single file or directory entry to a host destination path
+  bool ExtractEntry(Entry* entry, const std::filesystem::path& dest_path);
+
+  // Extract a file by its guest path (e.g. "default.xex") to host destination
+  bool ExtractFile(const std::string_view guest_path, const std::filesystem::path& dest_file);
+
+  // Extract all files in the disc image to a host directory
+  bool ExtractAll(
+      const std::filesystem::path& dest_dir,
+      std::function<void(const std::string& current_file, size_t file_index, size_t total_files)>
+          progress_cb = nullptr);
+
+  // Quick check whether a host file is a valid GDFX ISO
+  static bool IsDiscImage(const std::filesystem::path& path);
 
   const std::string& name() const override { return name_; }
   uint32_t attributes() const override { return 0; }

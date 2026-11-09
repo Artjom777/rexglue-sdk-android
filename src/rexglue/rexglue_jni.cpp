@@ -15,12 +15,14 @@
 #include <filesystem>
 #include <memory>
 #include <sstream>
+#include <fstream>
 #include <unistd.h>
 #include <android/log.h>
 
 #include "commands/codegen_command.h"
 #include "commands/init_command.h"
 #include "cli_utils.h"
+#include <rex/filesystem/devices/disc_image_device.h>
 #include <rex/logging.h>
 #include <rex/platform.h>
 #include <rex/version.h>
@@ -98,33 +100,164 @@ Java_com_rexglue_app_MainActivity_nativeGetDeviceInfo(
   return env->NewStringUTF(ss.str().c_str());
 }
 
+JNIEXPORT jstring JNICALL
+Java_com_rexglue_app_MainActivity_nativeInspectIso(
+    JNIEnv* env, jobject thiz, jstring jIsoPath) {
+  const char* iso_path_cstr = env->GetStringUTFChars(jIsoPath, nullptr);
+  std::string iso_path = iso_path_cstr ? iso_path_cstr : "";
+  env->ReleaseStringUTFChars(jIsoPath, iso_path_cstr);
+
+  if (iso_path.empty() || !std::filesystem::exists(iso_path)) {
+    return env->NewStringUTF("{\"valid\":false,\"error\":\"File not found\"}");
+  }
+
+  if (!rex::filesystem::DiscImageDevice::IsDiscImage(iso_path)) {
+    return env->NewStringUTF("{\"valid\":false,\"error\":\"Not an Xbox 360 GDFX ISO image\"}");
+  }
+
+  rex::filesystem::DiscImageDevice disc("", iso_path);
+  if (!disc.Initialize()) {
+    return env->NewStringUTF("{\"valid\":false,\"error\":\"Failed to initialize disc filesystem\"}");
+  }
+
+  bool has_xex = (disc.ResolvePath("default.xex") != nullptr ||
+                  disc.ResolvePath("\\default.xex") != nullptr);
+
+  std::ostringstream ss;
+  ss << "{\"valid\":true"
+     << ",\"file_count\":" << disc.file_count()
+     << ",\"total_size\":" << disc.total_file_size()
+     << ",\"game_offset\":" << disc.disc_info().game_offset
+     << ",\"root_sector\":" << disc.disc_info().root_sector
+     << ",\"has_default_xex\":" << (has_xex ? "true" : "false")
+     << "}";
+
+  return env->NewStringUTF(ss.str().c_str());
+}
+
 JNIEXPORT jint JNICALL
-Java_com_rexglue_app_MainActivity_nativeRunCodegen(
+Java_com_rexglue_app_MainActivity_nativeExtractIso(
     JNIEnv* env, jobject thiz,
-    jstring jXexPath, jstring jProjectName, jstring jOutDir, jboolean jMaliOpt) {
-  const char* xex_path_cstr = env->GetStringUTFChars(jXexPath, nullptr);
-  const char* project_name_cstr = env->GetStringUTFChars(jProjectName, nullptr);
-  const char* out_dir_cstr = env->GetStringUTFChars(jOutDir, nullptr);
+    jstring jIsoPath, jstring jDestDir, jboolean jExtractAll) {
+  const char* iso_path_cstr = env->GetStringUTFChars(jIsoPath, nullptr);
+  const char* dest_dir_cstr = env->GetStringUTFChars(jDestDir, nullptr);
+  std::string iso_path = iso_path_cstr ? iso_path_cstr : "";
+  std::string dest_dir = dest_dir_cstr ? dest_dir_cstr : "";
+  env->ReleaseStringUTFChars(jIsoPath, iso_path_cstr);
+  env->ReleaseStringUTFChars(jDestDir, dest_dir_cstr);
 
-  std::string xex_path = xex_path_cstr ? xex_path_cstr : "";
-  std::string project_name = project_name_cstr ? project_name_cstr : "recompiled_game";
-  std::string out_dir = out_dir_cstr ? out_dir_cstr : "";
+  if (iso_path.empty() || dest_dir.empty()) {
+    SendLogToJava("[ERROR] Invalid path parameters for ISO extraction");
+    return -1;
+  }
 
-  env->ReleaseStringUTFChars(jXexPath, xex_path_cstr);
-  env->ReleaseStringUTFChars(jProjectName, project_name_cstr);
-  env->ReleaseStringUTFChars(jOutDir, out_dir_cstr);
+  rex::filesystem::DiscImageDevice disc("", iso_path);
+  if (!disc.Initialize()) {
+    SendLogToJava("[ERROR] Cannot mount ISO image");
+    return -2;
+  }
 
-  if (xex_path.empty() || out_dir.empty()) {
-    SendLogToJava("[ERROR] Invalid XEX path or output directory!");
+  std::error_code ec;
+  std::filesystem::create_directories(dest_dir, ec);
+
+  if (jExtractAll) {
+    SendLogToJava(("[INFO] Extracting all " + std::to_string(disc.file_count()) + " files to " + dest_dir).c_str());
+    bool ok = disc.ExtractAll(dest_dir, [](const std::string& name, size_t idx, size_t total) {
+      if (idx % 20 == 0 || idx == total) {
+        SendLogToJava(("[EXTRACT] (" + std::to_string(idx) + "/" + std::to_string(total) + ") " + name).c_str());
+      }
+    });
+    return ok ? 0 : -3;
+  } else {
+    std::filesystem::path target = std::filesystem::path(dest_dir) / "default.xex";
+    SendLogToJava(("[INFO] Extracting default.xex to " + target.string()).c_str());
+    bool ok = disc.ExtractFile("default.xex", target);
+    return ok ? 0 : -4;
+  }
+}
+
+static jint RunCodegenInternal(
+    JNIEnv* env, jobject thiz,
+    const std::string& input_path, const std::string& project_name,
+    const std::string& out_dir, bool mali_opt, int mode) {
+
+  if (input_path.empty() || out_dir.empty()) {
+    SendLogToJava("[ERROR] Invalid input path or output directory!");
     return -1;
   }
 
   SendLogToJava(("[INFO] Initializing ReXGlue Project: " + project_name).c_str());
-  SendLogToJava(("[INFO] Source XEX: " + xex_path).c_str());
+  SendLogToJava(("[INFO] Input Source: " + input_path).c_str());
   SendLogToJava(("[INFO] Output Folder: " + out_dir).c_str());
+  SendLogToJava(("[INFO] Mode: " + std::string(mode == 2 ? "2 (Standalone All-in-One APK)" : "1 (Split ISO Mount APK)")).c_str());
 
   std::error_code ec;
   std::filesystem::create_directories(out_dir, ec);
+
+  std::string effective_xex_path = input_path;
+  std::string effective_game_root;
+
+  // Check if input is Xbox 360 ISO disc image
+  bool is_iso = rex::filesystem::DiscImageDevice::IsDiscImage(input_path);
+  if (is_iso) {
+    SendLogToJava("[INFO] Xbox 360 GDFX Disc Image detected!");
+    SendLogToJava("[INFO] Mounting disc image filesystem...");
+
+    rex::filesystem::DiscImageDevice disc("", input_path);
+    if (!disc.Initialize()) {
+      SendLogToJava("[ERROR] Failed to mount ISO disc image!");
+      return -10;
+    }
+
+    uint64_t total_mb = disc.total_file_size() / (1024 * 1024);
+    SendLogToJava(("[INFO] Disc contains " + std::to_string(disc.file_count()) +
+                   " files (" + std::to_string(total_mb) + " MB)").c_str());
+
+    std::filesystem::path game_data_dir = std::filesystem::path(out_dir) / "game_data";
+    std::filesystem::create_directories(game_data_dir, ec);
+    std::filesystem::path extracted_xex = game_data_dir / "default.xex";
+
+    if (mode == 2) {
+      // Mode 2: Standalone Full APK - Extract ALL game files
+      SendLogToJava("[INFO] Extracting all disc assets for Standalone Full APK packaging...");
+      bool extract_ok = disc.ExtractAll(game_data_dir, [](const std::string& name, size_t idx, size_t total) {
+        if (idx % 25 == 0 || idx == total) {
+          SendLogToJava(("[EXTRACT] (" + std::to_string(idx) + "/" + std::to_string(total) + ") " + name).c_str());
+        }
+      });
+      if (!extract_ok) {
+        SendLogToJava("[ERROR] Asset extraction from ISO failed!");
+        return -11;
+      }
+      SendLogToJava("[SUCCESS] All game files extracted to game_data!");
+
+      // Write config
+      std::ofstream cfg(std::filesystem::path(out_dir) / "rexglue.cfg");
+      cfg << "mode=standalone\n";
+      cfg << "project=" << project_name << "\n";
+      cfg.close();
+    } else {
+      // Mode 1: Split ISO APK - Extract ONLY default.xex for PPC->C++ codegen
+      SendLogToJava("[INFO] Extracting default.xex for PPC analysis...");
+      if (!disc.ExtractFile("default.xex", extracted_xex)) {
+        SendLogToJava("[ERROR] default.xex not found in ISO disc root!");
+        return -12;
+      }
+      SendLogToJava("[SUCCESS] default.xex extracted from ISO.");
+
+      // Write config pointing to the external ISO file
+      std::ofstream cfg(std::filesystem::path(out_dir) / "rexglue.cfg");
+      cfg << "mode=iso\n";
+      cfg << "iso_path=" << input_path << "\n";
+      cfg << "project=" << project_name << "\n";
+      cfg.close();
+    }
+
+    effective_xex_path = extracted_xex.string();
+    effective_game_root = game_data_dir.string();
+  } else {
+    effective_game_root = std::filesystem::path(input_path).parent_path().string();
+  }
 
   rexglue::cli::CliContext ctx;
   ctx.verbose = true;
@@ -134,15 +267,15 @@ Java_com_rexglue_app_MainActivity_nativeRunCodegen(
   // Step 1: Initialize Project
   rexglue::cli::InitOptions init_opts;
   init_opts.project_name = project_name;
-  init_opts.xex_path = xex_path;
+  init_opts.xex_path = effective_xex_path;
   init_opts.project_root = out_dir;
-  init_opts.game_root = std::filesystem::path(xex_path).parent_path().string();
+  init_opts.game_root = effective_game_root;
   init_opts.force = true;
 
   SendLogToJava("[INFO] Phase 1: Scanning XEX headers, PE sections, and PPC entry points...");
   auto init_res = rexglue::cli::InitProject(init_opts, ctx);
   if (!init_res) {
-    SendLogToJava(("[WARN] InitProject returned warning: " + init_res.error().message).c_str());
+    SendLogToJava(("[WARN] InitProject returned note: " + init_res.error().message).c_str());
   }
 
   std::string manifest_path = (std::filesystem::path(out_dir) / (project_name + "_manifest.toml")).string();
@@ -153,7 +286,7 @@ Java_com_rexglue_app_MainActivity_nativeRunCodegen(
     manifest_path = (std::filesystem::path(out_dir) / "manifest.toml").string();
   }
 
-  SendLogToJava(("[INFO] Manifest located: " + manifest_path).c_str());
+  SendLogToJava(("[INFO] Manifest generated: " + manifest_path).c_str());
   SendLogToJava("[INFO] Phase 2: Analyzing basic blocks, instruction patterns, and branches...");
   SendLogToJava("[INFO] Phase 3: Generating native C++ source code with embedded Inja templates...");
 
@@ -165,8 +298,42 @@ Java_com_rexglue_app_MainActivity_nativeRunCodegen(
   }
 
   SendLogToJava("[SUCCESS] PPC -> C++ Codegen completed successfully!");
-  SendLogToJava(("[INFO] Output files written to: " + out_dir).c_str());
+  SendLogToJava(("[INFO] Generated C++ source code in: " + out_dir).c_str());
+  if (is_iso && mode == 1) {
+    SendLogToJava("[READY] Mode 1: Split ISO APK port is ready to build!");
+    SendLogToJava(("[READY] Runtime will mount: " + input_path).c_str());
+  } else if (is_iso && mode == 2) {
+    SendLogToJava("[READY] Mode 2: Standalone Full Game APK port is ready to build!");
+    SendLogToJava("[READY] All assets bundled. No external files needed.");
+  }
   return 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_rexglue_app_MainActivity_nativeRunCodegenMode(
+    JNIEnv* env, jobject thiz,
+    jstring jInputPath, jstring jProjectName, jstring jOutDir, jboolean jMaliOpt, jint jMode) {
+  const char* in_path_cstr = env->GetStringUTFChars(jInputPath, nullptr);
+  const char* project_name_cstr = env->GetStringUTFChars(jProjectName, nullptr);
+  const char* out_dir_cstr = env->GetStringUTFChars(jOutDir, nullptr);
+
+  std::string in_path = in_path_cstr ? in_path_cstr : "";
+  std::string project_name = project_name_cstr ? project_name_cstr : "recompiled_game";
+  std::string out_dir = out_dir_cstr ? out_dir_cstr : "";
+
+  env->ReleaseStringUTFChars(jInputPath, in_path_cstr);
+  env->ReleaseStringUTFChars(jProjectName, project_name_cstr);
+  env->ReleaseStringUTFChars(jOutDir, out_dir_cstr);
+
+  return RunCodegenInternal(env, thiz, in_path, project_name, out_dir, jMaliOpt, jMode);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_rexglue_app_MainActivity_nativeRunCodegen(
+    JNIEnv* env, jobject thiz,
+    jstring jXexPath, jstring jProjectName, jstring jOutDir, jboolean jMaliOpt) {
+  return Java_com_rexglue_app_MainActivity_nativeRunCodegenMode(
+      env, thiz, jXexPath, jProjectName, jOutDir, jMaliOpt, 1);
 }
 
 }  // extern "C"

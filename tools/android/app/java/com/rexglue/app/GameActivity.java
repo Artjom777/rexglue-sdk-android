@@ -32,6 +32,65 @@ public class GameActivity extends SDLActivity {
     }
 
     @Override
+    protected String[] getArguments() {
+        ArrayList<String> args = new ArrayList<>();
+
+        // 1. Check Intent extra
+        String gameData = getIntent().getStringExtra("game_data_root");
+        if (gameData != null && !gameData.isEmpty()) {
+            args.add("--game_data_root=" + gameData);
+            return args.toArray(new String[0]);
+        }
+
+        // 2. Check args.txt or rexglue.cfg in app storage
+        File[] candidateConfigFiles = new File[] {
+            new File(getExternalFilesDir(null), "args.txt"),
+            new File(getFilesDir(), "args.txt"),
+            new File(getExternalFilesDir(null), "rexglue.cfg"),
+            new File(getFilesDir(), "rexglue.cfg")
+        };
+
+        for (File cfg : candidateConfigFiles) {
+            if (cfg.exists()) {
+                try (BufferedReader reader = new BufferedReader(new FileReader(cfg))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        line = line.trim();
+                        if (line.isEmpty() || line.startsWith("#")) continue;
+                        if (line.startsWith("--game_data_root=")) {
+                            args.add(line);
+                        } else if (line.startsWith("iso_path=")) {
+                            args.add("--game_data_root=" + line.substring("iso_path=".length()).trim());
+                        }
+                    }
+                } catch (Exception ignored) {}
+                if (!args.isEmpty()) {
+                    return args.toArray(new String[0]);
+                }
+            }
+        }
+
+        // 3. Check internal standalone game assets folder
+        File internalGameDir = new File(getFilesDir(), "game");
+        if (internalGameDir.exists() && internalGameDir.isDirectory()) {
+            args.add("--game_data_root=" + internalGameDir.getAbsolutePath());
+            return args.toArray(new String[0]);
+        }
+
+        // 4. Check common Xbox360 storage directory
+        File defaultDir = new File(android.os.Environment.getExternalStorageDirectory(), "Xbox360");
+        if (defaultDir.exists()) {
+            File[] isos = defaultDir.listFiles((d, name) -> name.toLowerCase().endsWith(".iso"));
+            if (isos != null && isos.length > 0) {
+                args.add("--game_data_root=" + isos[0].getAbsolutePath());
+                return args.toArray(new String[0]);
+            }
+        }
+
+        return super.getArguments();
+    }
+
+    @Override
     protected String[] getLibraries() {
         File mainLib = new File(getApplicationInfo().nativeLibraryDir, "libmain.so");
         if (mainLib.exists()) {

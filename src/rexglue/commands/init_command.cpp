@@ -21,6 +21,7 @@
 
 #include <rex/codegen/manifest.h>
 #include <rex/codegen/template_registry.h>
+#include <rex/filesystem/devices/disc_image_device.h>
 #include <rex/kernel/init.h>
 #include <rex/logging.h>
 #include <rex/result.h>
@@ -114,18 +115,38 @@ Result<void> InitProject(const InitOptions& opts, const CliContext& ctx) {
   if (!fs::is_regular_file(xexAbs))
     return Err<void>(ErrorCategory::IO, "--xex_path is not a regular file: " + xexAbs.string());
 
+  fs::path gameRootAbs;
+  if (rex::filesystem::DiscImageDevice::IsDiscImage(xexAbs)) {
+    REXLOG_INFO("Detected Xbox 360 ISO image: {}", xexAbs.string());
+    rex::filesystem::DiscImageDevice disc("", xexAbs);
+    if (!disc.Initialize()) {
+      return Err<void>(ErrorCategory::IO,
+                      "Failed to mount Xbox 360 ISO disc image: " + xexAbs.string());
+    }
+    fs::path gameDataDir = projectRoot / "game_data";
+    fs::create_directories(gameDataDir, ec);
+    fs::path targetXex = gameDataDir / "default.xex";
+    REXLOG_INFO("Extracting default.xex from ISO to {}...", targetXex.string());
+    if (!disc.ExtractFile("default.xex", targetXex)) {
+      return Err<void>(ErrorCategory::IO, "default.xex not found in ISO disc image root");
+    }
+    xexAbs = targetXex;
+    gameRootAbs = gameDataDir;
+  }
+
   std::string xexStem = xexAbs.stem().string();
   if (xexStem.empty())
     return Err<void>(ErrorCategory::Config, "--xex_path has no filename: " + opts.xex_path);
 
-  fs::path gameRootAbs;
-  if (opts.game_root.empty()) {
-    gameRootAbs = xexAbs.parent_path();
-  } else {
-    gameRootAbs = ResolveDir(opts.game_root, ec);
-    if (ec)
-      return Err<void>(ErrorCategory::IO,
-                       "Failed to resolve --game_root '" + opts.game_root + "': " + ec.message());
+  if (gameRootAbs.empty()) {
+    if (opts.game_root.empty()) {
+      gameRootAbs = xexAbs.parent_path();
+    } else {
+      gameRootAbs = ResolveDir(opts.game_root, ec);
+      if (ec)
+        return Err<void>(ErrorCategory::IO,
+                         "Failed to resolve --game_root '" + opts.game_root + "': " + ec.message());
+    }
   }
   if (!fs::exists(gameRootAbs) || !fs::is_directory(gameRootAbs))
     return Err<void>(ErrorCategory::IO, "--game_root is not a directory: " + gameRootAbs.string());

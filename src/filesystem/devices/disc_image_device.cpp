@@ -12,6 +12,12 @@
 #include <rex/filesystem/devices/disc_image_device.h>
 #include <rex/filesystem/devices/disc_image_entry.h>
 
+#include <cstdio>
+#include <cctype>
+#include <algorithm>
+#include <vector>
+#include <filesystem>
+
 #include <rex/literals.h>
 #include <rex/logging.h>
 #include <rex/math.h>
@@ -191,6 +197,160 @@ bool DiscImageDevice::ReadEntry(ParseState* state, const uint8_t* buffer, uint16
   }
 
   return true;
+}
+
+bool DiscImageDevice::ExtractEntry(Entry* entry, const std::filesystem::path& dest_path) {
+  if (!entry) {
+    return false;
+  }
+
+  std::error_code ec;
+  if (entry->attributes() & kFileAttributeDirectory) {
+    std::filesystem::create_directories(dest_path, ec);
+    for (const auto& child : entry->children()) {
+      auto child_dest = dest_path / child->name();
+      if (!ExtractEntry(child.get(), child_dest)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  auto* disc_entry = static_cast<DiscImageEntry*>(entry);
+  if (!disc_entry || !mmap_) {
+    return false;
+  }
+
+  if (dest_path.has_parent_path()) {
+    std::filesystem::create_directories(dest_path.parent_path(), ec);
+  }
+
+  FILE* fp = std::fopen(dest_path.string().c_str(), "wb");
+  if (!fp) {
+    REXFS_ERROR("Failed to create destination file: {}", dest_path.string());
+    return false;
+  }
+
+  const uint8_t* src = mmap_->data() + disc_entry->data_offset();
+  size_t remaining = disc_entry->data_size();
+  constexpr size_t kChunkSize = 4 * 1024 * 1024;  // 4MB stream chunks
+
+  while (remaining > 0) {
+    size_t chunk = std::min(remaining, kChunkSize);
+    size_t written = std::fwrite(src, 1, chunk, fp);
+    if (written != chunk) {
+      std::fclose(fp);
+      REXFS_ERROR("Write error while extracting file: {}", dest_path.string());
+      return false;
+    }
+    src += chunk;
+    remaining -= chunk;
+  }
+
+  std::fclose(fp);
+  return true;
+}
+
+bool DiscImageDevice::ExtractFile(const std::string_view guest_path,
+                                  const std::filesystem::path& dest_file) {
+  std::string clean{guest_path};
+  while (!clean.empty() && (clean.front() == '/' || clean.front() == '\\')) {
+    clean.erase(0, 1);
+  }
+  Entry* entry = ResolvePath(clean);
+  if (!entry) {
+    entry = ResolvePath(guest_path);
+  }
+  if (!entry) {
+    return false;
+  }
+  return ExtractEntry(entry, dest_file);
+}
+
+bool DiscImageDevice::ExtractAll(
+    const std::filesystem::path& dest_dir,
+    std::function<void(const std::string& current_file, size_t file_index, size_t total_files)>
+        progress_cb) {
+  if (!root_entry_) {
+    return false;
+  }
+
+  std::error_code ec;
+  std::filesystem::create_directories(dest_dir, ec);
+
+  size_t current_file_index = 0;
+  size_t total_files = file_count_;
+
+  std::function<bool(Entry*, const std::filesystem::path&)> extract_recursive;
+  extract_recursive = [&](Entry* entry, const std::filesystem::path& current_dest) -> bool {
+    if (entry->attributes() & kFileAttributeDirectory) {
+      std::filesystem::create_directories(current_dest, ec);
+      for (const auto& child : entry->children()) {
+        auto child_dest = current_dest / child->name();
+        if (!extract_recursive(child.get(), child_dest)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (progress_cb) {
+      progress_cb(entry->name(), current_file_index + 1, total_files);
+    }
+    bool ok = ExtractEntry(entry, current_dest);
+    current_file_index++;
+    return ok;
+  };
+
+  for (const auto& child : root_entry_->children()) {
+    auto child_dest = dest_dir / child->name();
+    if (!extract_recursive(child.get(), child_dest)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool DiscImageDevice::IsDiscImage(const std::filesystem::path& path) {
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec)) {
+    return false;
+  }
+  uint64_t size = std::filesystem::file_size(path, ec);
+  if (ec || size < (32 * kXESectorSize + 20)) {
+    return false;
+  }
+
+  static const size_t likely_offsets[] = {
+      0x00000000, 0x0000FB20, 0x00020600, 0x02080000, 0x0FD90000,
+  };
+
+  FILE* fp = std::fopen(path.string().c_str(), "rb");
+  if (!fp) {
+    return false;
+  }
+
+  char magic[20] = {};
+  for (size_t offset : likely_offsets) {
+    size_t target_offset = offset + (32 * kXESectorSize);
+    if (target_offset + sizeof(magic) <= size) {
+      if (std::fseek(fp, static_cast<long>(target_offset), SEEK_SET) == 0) {
+        if (std::fread(magic, 1, sizeof(magic), fp) == sizeof(magic)) {
+          if (std::memcmp(magic, "MICROSOFT*XBOX*MEDIA", sizeof(magic)) == 0) {
+            std::fclose(fp);
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  std::fclose(fp);
+
+  std::string ext = path.extension().string();
+  for (auto& c : ext) c = static_cast<char>(std::tolower(c));
+  return (ext == ".iso" || ext == ".xiso");
 }
 
 }  // namespace rex::filesystem

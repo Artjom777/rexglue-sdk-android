@@ -4,7 +4,7 @@
 # Builds ReXGlue Studio APK or standalone recompiled Xbox 360 game APKs
 # Usage:
 #   ./tools/android/build_apk.sh studio [poco|arm64]
-#   ./tools/android/build_apk.sh game <path_to_libmain.so> [game_name]
+#   ./tools/android/build_apk.sh game <path_to_libmain.so> [game_name] [assets_dir_or_iso_path]
 # ==============================================================================
 set -e
 
@@ -129,13 +129,38 @@ if [ -f "$SDK_BIN/rexglue" ]; then
   cp "$SDK_BIN/rexglue" "$LIB_TARGET/librexglue_cli.so"
 fi
 
-if [ "$MODE" = "game" ]; then
+if [ "$MODE" = "game" ] || [ "$MODE" = "game-iso" ] || [ "$MODE" = "game-standalone" ]; then
   GAME_LIB="$2"
   GAME_NAME="${3:-rexglue-game}"
+  GAME_DATA="${4:-}"
+
   if [ -f "$GAME_LIB" ]; then
     cp "$GAME_LIB" "$LIB_TARGET/libmain.so"
   fi
-  APK_NAME="${GAME_NAME}-${APK_SUFFIX}.apk"
+
+  # Handle Mode 1 (ISO mount) vs Mode 2 (Standalone assets)
+  mkdir -p "$STAGE_DIR/stage/assets"
+  if [ -n "$GAME_DATA" ]; then
+    if [ -d "$GAME_DATA" ]; then
+      echo "==> Bundling standalone game assets from: $GAME_DATA"
+      cp -r "$GAME_DATA" "$STAGE_DIR/stage/assets/game"
+      cat <<EOF > "$STAGE_DIR/stage/assets/rexglue.cfg"
+mode=standalone
+project=$GAME_NAME
+EOF
+      APK_NAME="${GAME_NAME}-standalone-${APK_SUFFIX}.apk"
+    elif [ -f "$GAME_DATA" ]; then
+      echo "==> Configuring ISO-mounted port for disc image: $GAME_DATA"
+      cat <<EOF > "$STAGE_DIR/stage/assets/rexglue.cfg"
+mode=iso
+iso_path=$GAME_DATA
+project=$GAME_NAME
+EOF
+      APK_NAME="${GAME_NAME}-iso-${APK_SUFFIX}.apk"
+    fi
+  else
+    APK_NAME="${GAME_NAME}-${APK_SUFFIX}.apk"
+  fi
 else
   APK_NAME="ReXGlue-Studio-${APK_SUFFIX}.apk"
 fi
@@ -145,7 +170,10 @@ fi
 # 6. Repackage, 16KB zipalign and apksign
 echo "==> [6/6] Packaging, 16KB zipalign, and signing APK..."
 cp "$STAGE_DIR/base.apk" "$STAGE_DIR/unaligned.apk"
-(cd "$STAGE_DIR/stage" && zip -q -X "$STAGE_DIR/unaligned.apk" classes.dex && zip -q -X -0 -r "$STAGE_DIR/unaligned.apk" lib)
+(cd "$STAGE_DIR/stage" && \
+  zip -q -X "$STAGE_DIR/unaligned.apk" classes.dex && \
+  zip -q -X -0 -r "$STAGE_DIR/unaligned.apk" lib && \
+  ([ ! -d assets ] || zip -q -X -r "$STAGE_DIR/unaligned.apk" assets))
 
 "$BT/zipalign" -f -P 16 4 "$STAGE_DIR/unaligned.apk" "$STAGE_DIR/aligned.apk"
 
