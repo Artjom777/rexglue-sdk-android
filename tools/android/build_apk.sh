@@ -93,6 +93,7 @@ fi
   --manifest "$MANIFEST" \
   -I "$JAR" \
   --java "$STAGE_DIR/gen" \
+  --custom-package com.rexglue.app \
   $RES_PARAM \
   --auto-add-overlay \
   --min-sdk-version 28 \
@@ -100,13 +101,21 @@ fi
 
 # 3. Compile Java with javac
 echo "==> [3/6] Compiling Java source files..."
-JAVA_SOURCES=$(find "$APP_DIR/java" "$STAGE_DIR/gen" -name '*.java')
+if [ "$MODE" = "runner" ]; then
+  JAVA_SOURCES="$APP_DIR/java/com/rexglue/app/GameActivity.java"
+  if [ -d "$STAGE_DIR/gen" ]; then
+    GEN_SOURCES=$(find "$STAGE_DIR/gen" -name '*.java')
+    [ -n "$GEN_SOURCES" ] && JAVA_SOURCES="$JAVA_SOURCES $GEN_SOURCES"
+  fi
+else
+  JAVA_SOURCES=$(find "$APP_DIR/java" "$STAGE_DIR/gen" -name '*.java')
+fi
+
 if [ -d "$SDL_JAVA" ]; then
   JAVA_SOURCES="$JAVA_SOURCES $(find "$SDL_JAVA" -name '*.java' 2>/dev/null)"
 fi
 
-javac --release 17 -nowarn -classpath "$JAR" -d "$STAGE_DIR/classes" \
-  $JAVA_SOURCES 2>&1 | grep -v "^Note:" || true
+javac --release 17 -nowarn -classpath "$JAR" -d "$STAGE_DIR/classes" $JAVA_SOURCES
 
 # 4. Convert classes to DEX with d8
 echo "==> [4/6] Creating classes.dex with d8..."

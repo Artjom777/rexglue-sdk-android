@@ -32,6 +32,8 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.rexglue.app.R;
+
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
