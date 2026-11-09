@@ -754,7 +754,9 @@ public class MainActivity extends Activity {
         }
 
         final String updatePath = etUpdatePath.getText().toString().trim();
-        final String projectName = etProjectName.getText().toString().trim();
+        String proj = etProjectName.getText().toString().trim();
+        if (proj.isEmpty()) proj = "xbox360_port";
+        final String projectName = proj;
         final int mode = selectedMode;
 
         if (isoList.isEmpty()) {
@@ -845,7 +847,9 @@ public class MainActivity extends Activity {
     }
 
     private void buildGameApk() {
-        final String projectName = etProjectName.getText().toString().trim();
+        String proj = etProjectName.getText().toString().trim();
+        if (proj.isEmpty()) proj = "xbox360_port";
+        final String projectName = proj;
         final File portDir = new File(getExternalFilesDir("ports"), projectName);
         final int mode = selectedMode;
 
@@ -868,7 +872,9 @@ public class MainActivity extends Activity {
     }
 
     private void launchGame() {
-        final String projectName = etProjectName.getText().toString().trim();
+        String proj = etProjectName.getText().toString().trim();
+        if (proj.isEmpty()) proj = "xbox360_port";
+        final String projectName = proj;
         final String p1 = etIsoPath1.getText().toString().trim();
         final String updatePath = etUpdatePath.getText().toString().trim();
         final int mode = selectedMode;

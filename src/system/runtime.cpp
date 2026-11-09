@@ -93,8 +93,11 @@ std::optional<EmbeddedMetadataAsset> Runtime::FindEmbeddedMetadata(
 
 X_STATUS Runtime::Setup(RuntimeConfig config) {
   if (instance_ != nullptr) {
-    REXSYS_ERROR("Runtime::Setup() called but global instance already exists");
-    return X_STATUS_UNSUCCESSFUL;
+    REXSYS_WARN("Runtime::Setup() called but global instance already exists, shutting down previous...");
+    if (instance_ != this) {
+      instance_->Shutdown();
+    }
+    instance_ = nullptr;
   }
   instance_ = this;
 

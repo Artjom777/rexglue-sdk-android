@@ -103,12 +103,18 @@ inline bool write_file_atomic(const std::filesystem::path& path, const std::stri
     }
   }
   std::error_code ec;
+  std::filesystem::remove(path, ec);
+  ec.clear();
   std::filesystem::rename(tmp, path, ec);
   if (ec) {
+    ec.clear();
+    std::filesystem::copy_file(tmp, path, std::filesystem::copy_options::overwrite_existing, ec);
     std::error_code ignore;
     std::filesystem::remove(tmp, ignore);
-    REXLOG_ERROR("Failed to rename {} to {}: {}", tmp.string(), path.string(), ec.message());
-    return false;
+    if (ec) {
+      REXLOG_ERROR("Failed to rename/copy {} to {}: {}", tmp.string(), path.string(), ec.message());
+      return false;
+    }
   }
   return true;
 }

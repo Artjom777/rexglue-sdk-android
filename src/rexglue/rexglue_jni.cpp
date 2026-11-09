@@ -27,10 +27,15 @@
 
 #include "commands/codegen_command.h"
 #include "commands/init_command.h"
+#include "commands/template_utils.h"
 #include "cli_utils.h"
 #include "ui/ui.h"
+#include <rex/codegen/manifest.h>
 #include <rex/filesystem/devices/disc_image_device.h>
 #include <rex/logging.h>
+#include <rex/logging/api.h>
+#include <rex/logging/types.h>
+#include <spdlog/sinks/base_sink.h>
 #include <rex/platform.h>
 #include <rex/version.h>
 
@@ -109,11 +114,43 @@ class AndroidLogStreamBuf : public std::streambuf {
 static AndroidLogStreamBuf g_android_log_buf;
 static std::ostream g_android_log_stream(&g_android_log_buf);
 
+/** Custom spdlog sink routing all core/kernel/codegen logs directly to Android UI console */
+class AndroidSpdlogSink : public spdlog::sinks::base_sink<std::mutex> {
+ protected:
+  void sink_it_(const spdlog::details::log_msg& msg) override {
+    try {
+      spdlog::memory_buf_t formatted;
+      base_sink<std::mutex>::formatter_->format(msg, formatted);
+      std::string s(formatted.data(), formatted.size());
+      while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) {
+        s.pop_back();
+      }
+      if (!s.empty()) {
+        SendLogToJava(s.c_str());
+      }
+    } catch (...) {}
+  }
+
+  void flush_() override {}
+};
+
 /** Initializes rexglue::ui with our log stream to prevent RequireGlobalSink exceptions */
 static void EnsureUiInitialized() {
   rexglue::ui::Shutdown();
   auto sink = std::make_unique<rexglue::ui::PresentationSink>(g_android_log_stream, false, false);
   rexglue::ui::detail::SetGlobalSinkForTesting(std::move(sink));
+
+  static bool s_spdlog_inited = false;
+  if (!s_spdlog_inited) {
+    s_spdlog_inited = true;
+    rex::LogConfig cfg;
+    cfg.log_to_console = false;
+    cfg.default_level = spdlog::level::info;
+    auto spdlog_sink = std::make_shared<AndroidSpdlogSink>();
+    spdlog_sink->set_level(spdlog::level::info);
+    cfg.extra_sinks.push_back(spdlog_sink);
+    rex::InitLogging(cfg);
+  }
 }
 
 /** Extracts default.xex from GDFX disc image, handling lowercase, uppercase, and entry search */
@@ -445,8 +482,22 @@ static jint RunCodegenMultiInternal(
     ctx.overwrite_existing = true;
     ctx.generate_despite_errors = true;
 
+    // Sanitize project name to ensure it starts with an ASCII letter and contains valid identifier characters
+    std::string safe_project_name = project_name;
+    if (safe_project_name.empty() || !std::isalpha(static_cast<unsigned char>(safe_project_name[0]))) {
+      safe_project_name = "game_" + safe_project_name;
+    }
+    for (char& c : safe_project_name) {
+      if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
+        c = '_';
+      }
+    }
+
+    auto names = rexglue::cli::parse_app_name(safe_project_name);
+    std::string canonical_name = names.original.empty() ? "xbox360port" : names.original;
+
     rexglue::cli::InitOptions init_opts;
-    init_opts.project_name = project_name;
+    init_opts.project_name = safe_project_name;
     init_opts.xex_path = primary_xex.string();
     init_opts.project_root = out_dir;
     init_opts.game_root = primary_xex.parent_path().string();
@@ -455,18 +506,73 @@ static jint RunCodegenMultiInternal(
     SendLogToJava("[INFO] Phase 1: Scanning entrypoint XEX and PE sections...");
     auto init_res = rexglue::cli::InitProject(init_opts, ctx);
     if (!init_res) {
-      SendLogToJava(("[WARN] InitProject note: " + init_res.error().message).c_str());
+      SendLogToJava(("[WARN] InitProject notice: " + init_res.error().message).c_str());
     }
 
-    std::string manifest_path = (std::filesystem::path(out_dir) / (project_name + "_manifest.toml")).string();
-    if (!std::filesystem::exists(manifest_path, ec) || ec) {
-      manifest_path = (std::filesystem::path(out_dir) / "rexglue.toml").string();
-    }
-    if (!std::filesystem::exists(manifest_path, ec) || ec) {
-      manifest_path = (std::filesystem::path(out_dir) / "manifest.toml").string();
+    // Locate or create the project manifest
+    std::string manifest_path;
+    std::vector<std::string> manifest_candidates = {
+        (std::filesystem::path(out_dir) / (canonical_name + "_manifest.toml")).string(),
+        (std::filesystem::path(out_dir) / (safe_project_name + "_manifest.toml")).string(),
+        (std::filesystem::path(out_dir) / (project_name + "_manifest.toml")).string(),
+        (std::filesystem::path(out_dir) / "rexglue.toml").string(),
+        (std::filesystem::path(out_dir) / "manifest.toml").string(),
+    };
+
+    for (const auto& cand : manifest_candidates) {
+      if (std::filesystem::exists(cand, ec) && rex::codegen::ManifestConfig::IsManifest(cand)) {
+        manifest_path = cand;
+        break;
+      }
     }
 
-    SendLogToJava(("[INFO] Manifest generated: " + manifest_path).c_str());
+    if (manifest_path.empty()) {
+      for (const auto& entry : std::filesystem::directory_iterator(out_dir, ec)) {
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() == ".toml" && rex::codegen::ManifestConfig::IsManifest(entry.path())) {
+          manifest_path = entry.path().string();
+          break;
+        }
+      }
+    }
+
+    // Compute relative paths from project root (out_dir)
+    std::filesystem::path rel_xex = std::filesystem::relative(primary_xex, out_dir, ec);
+    std::string rel_xex_str = (ec || rel_xex.empty()) ? "game_data/default.xex" : rel_xex.generic_string();
+    std::filesystem::path rel_game_root = std::filesystem::relative(primary_xex.parent_path(), out_dir, ec);
+    std::string rel_game_root_str = (ec || rel_game_root.empty()) ? "game_data" : rel_game_root.generic_string();
+    std::string entrypoint_out_dir = "generated/" + primary_xex.stem().string();
+
+    std::filesystem::create_directories(std::filesystem::path(out_dir) / "src", ec);
+    std::filesystem::create_directories(std::filesystem::path(out_dir) / entrypoint_out_dir, ec);
+
+    if (manifest_path.empty()) {
+      manifest_path = (std::filesystem::path(out_dir) / (canonical_name + "_manifest.toml")).string();
+      SendLogToJava(("[INFO] Generating direct project manifest TOML: " + manifest_path).c_str());
+      std::ofstream mf(manifest_path);
+      mf << "# Auto-generated by ReXGlue Studio Android\n\n";
+      mf << "[project]\n";
+      mf << "name = \"" << canonical_name << "\"\n";
+      mf << "sdk_version = \"" << REXGLUE_VERSION_FLOOR << "\"\n";
+      mf << "game_root = \"" << rel_game_root_str << "\"\n\n";
+      mf << "[entrypoint]\n";
+      mf << "file_path = \"" << rel_xex_str << "\"\n";
+      mf << "out_directory_path = \"" << entrypoint_out_dir << "\"\n";
+      mf << "includes = []\n";
+      mf.close();
+    }
+
+    // Ensure minimal CMakeLists.txt exists if template init didn't create it
+    std::filesystem::path cmakelists = std::filesystem::path(out_dir) / "CMakeLists.txt";
+    if (!std::filesystem::exists(cmakelists, ec) || ec) {
+      std::ofstream cf(cmakelists);
+      cf << "cmake_minimum_required(VERSION 3.25)\n";
+      cf << "project(" << canonical_name << " LANGUAGES C CXX ASM)\n";
+      cf << "include(generated/rexglue.cmake)\n";
+      cf.close();
+    }
+
+    SendLogToJava(("[INFO] Using manifest: " + manifest_path).c_str());
     SendLogToJava("[INFO] Phase 2: Analyzing basic blocks, instruction patterns, and branches...");
     SendLogToJava("[INFO] Phase 3: Generating native C++ source code with embedded Inja templates...");
 

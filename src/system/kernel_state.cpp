@@ -75,8 +75,8 @@ KernelState::KernelState(Runtime* emulator)
   content_manager_ = std::make_unique<xam::ContentManager>(this, user_data_root);
 
   if (shared_kernel_state_ != nullptr) {
-    REXSYS_ERROR("KernelState constructed but shared_kernel_state_ already set");
-    rex::FatalError("Double initialization of KernelState");
+    REXSYS_WARN("KernelState constructed but shared_kernel_state_ already set, resetting...");
+    shared_kernel_state_ = nullptr;
   }
   shared_kernel_state_ = this;
 
