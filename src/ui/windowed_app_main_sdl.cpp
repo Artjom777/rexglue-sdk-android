@@ -60,7 +60,17 @@ int RunWindowedApp(int argc, char** argv) {
     }
 #endif
 
-    std::unique_ptr<rex::ui::WindowedApp> app = rex::ui::GetWindowedAppCreator()(app_context);
+    auto creator = rex::ui::GetWindowedAppCreator();
+    if (!creator) {
+      REXLOG_ERROR("No WindowedApp creator registered");
+      return EXIT_FAILURE;
+    }
+
+    std::unique_ptr<rex::ui::WindowedApp> app = creator(app_context);
+    if (!app) {
+      REXLOG_ERROR("WindowedApp creator returned null");
+      return EXIT_FAILURE;
+    }
 
     // Match remaining positional args to the app's expected options.
     const auto& option_names = app->GetPositionalOptions();
@@ -201,6 +211,12 @@ int main(int argc, char* argv[]) {
   }
   g_ios_argv.push_back(nullptr);
   return SDL_RunApp(static_cast<int>(g_ios_args.size()), g_ios_argv.data(), IosMain, nullptr);
+}
+
+#elif REX_PLATFORM_ANDROID
+
+extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char* argv[]) {
+  return RunWindowedApp(argc, argv);
 }
 
 #else

@@ -180,3 +180,29 @@ if(REXGLUE_USE_D3D12)
     target_link_libraries(rexui PUBLIC dxc-headers)
 endif()
 
+if(ANDROID)
+    add_library(main SHARED
+        windowed_app_main_sdl.cpp
+        rex_app.cpp
+        runner_main.cpp
+    )
+    target_include_directories(main PRIVATE
+        ${REXGLUE_ROOT}/include
+        ${REXGLUE_ROOT}/thirdparty/imgui
+    )
+    target_compile_definitions(main PRIVATE
+        REXGLUE_BUILD_CONFIG="$<CONFIG>"
+    )
+    target_link_libraries(main PRIVATE
+        rexruntime
+        SDL3::SDL3
+        android
+        log
+    )
+    set_target_properties(main PROPERTIES
+        OUTPUT_NAME "main"
+        LINK_FLAGS "-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
+    )
+    install(TARGETS main LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endif()
+

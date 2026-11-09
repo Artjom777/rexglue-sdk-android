@@ -268,10 +268,19 @@ void InitLogging(const LogConfig& config) {
     resolved_path = NextSequentialLogPath(log_dir, config.app_name);
   }
   if (!resolved_path.empty()) {
-    auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(resolved_path.string(), false);
-    sink->set_level(spdlog::level::trace);
-    sink->set_pattern(config.file_pattern);
-    g_file_sink = sink;
+    try {
+      std::error_code ec;
+      std::filesystem::create_directories(resolved_path.parent_path(), ec);
+      auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(resolved_path.string(), false);
+      sink->set_level(spdlog::level::trace);
+      sink->set_pattern(config.file_pattern);
+      g_file_sink = sink;
+    } catch (const std::exception& e) {
+#if REX_PLATFORM_ANDROID
+      __android_log_print(ANDROID_LOG_WARN, "ReXGlue", "Failed to create log file at %s: %s",
+                          resolved_path.c_str(), e.what());
+#endif
+    }
   }
 
   g_extra_sinks = config.extra_sinks;

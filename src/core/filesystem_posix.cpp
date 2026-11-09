@@ -24,6 +24,10 @@
 #include <mach-o/dyld.h>
 #endif
 
+#if REX_PLATFORM_ANDROID
+#include <SDL3/SDL_system.h>
+#endif
+
 #include <rex/assert.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
@@ -100,10 +104,33 @@ std::filesystem::path GetExecutablePath() {
 }
 
 std::filesystem::path GetExecutableFolder() {
+#if REX_PLATFORM_ANDROID
+  const char* ext = SDL_GetAndroidExternalStoragePath();
+  if (ext && ext[0]) {
+    return std::filesystem::path(ext);
+  }
+  const char* internal = SDL_GetAndroidInternalStoragePath();
+  if (internal && internal[0]) {
+    return std::filesystem::path(internal);
+  }
+  return std::filesystem::path("/storage/emulated/0/Download");
+#else
   return GetExecutablePath().parent_path();
+#endif
 }
 
 std::filesystem::path GetUserFolder() {
+#if REX_PLATFORM_ANDROID
+  const char* ext = SDL_GetAndroidExternalStoragePath();
+  if (ext && ext[0]) {
+    return std::filesystem::path(ext);
+  }
+  const char* internal = SDL_GetAndroidInternalStoragePath();
+  if (internal && internal[0]) {
+    return std::filesystem::path(internal);
+  }
+  return std::filesystem::path("/storage/emulated/0/Download");
+#else
   // get preferred data home
   if (auto xdg = rex::platform::env::get("XDG_DATA_HOME")) {
     return std::filesystem::path(*xdg);
@@ -121,6 +148,7 @@ std::filesystem::path GetUserFolder() {
   getpwuid_r(getuid(), &pw1, buf, sizeof(buf), &pw);
   assert(&pw1 == pw);  // sanity check
   return std::filesystem::path(pw->pw_dir) / ".local" / "share";
+#endif
 }
 
 FILE* OpenFile(const std::filesystem::path& path, const std::string_view mode) {

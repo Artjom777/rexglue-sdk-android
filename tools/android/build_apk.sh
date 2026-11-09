@@ -138,6 +138,14 @@ if [ -f "$SDK_LIB/librexglue_jni.so" ]; then
   cp "$SDK_LIB/librexglue_jni.so" "$LIB_TARGET/"
 fi
 
+if [ -f "$SDK_LIB/librexgpu-xenos.so" ]; then
+  cp "$SDK_LIB/librexgpu-xenos.so" "$LIB_TARGET/"
+fi
+
+if [ -f "$SDK_LIB/libmain.so" ]; then
+  cp "$SDK_LIB/libmain.so" "$LIB_TARGET/"
+fi
+
 # Bundle the rexglue CLI executable as librexglue_cli.so for Studio
 if [ "$MODE" != "runner" ] && [ -f "$SDK_BIN/rexglue" ]; then
   cp "$SDK_BIN/rexglue" "$LIB_TARGET/librexglue_cli.so"

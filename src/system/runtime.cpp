@@ -211,12 +211,14 @@ X_STATUS Runtime::Setup(const rex::PPCImageInfo& image_info, RuntimeConfig confi
 
   codegen_flags_ = image_info.codegen_flags;
 
-  if (!function_dispatcher_->InitializeFunctionTable(image_info.code_base, image_info.code_size,
-                                                     image_info.image_base, image_info.image_size,
-                                                     /*is_entrypoint=*/true)) {
-    REXSYS_ERROR("Failed to initialize function table");
-    Shutdown();
-    return X_STATUS_UNSUCCESSFUL;
+  if (image_info.code_size > 0) {
+    if (!function_dispatcher_->InitializeFunctionTable(image_info.code_base, image_info.code_size,
+                                                       image_info.image_base, image_info.image_size,
+                                                       /*is_entrypoint=*/true)) {
+      REXSYS_ERROR("Failed to initialize function table");
+      Shutdown();
+      return X_STATUS_UNSUCCESSFUL;
+    }
   }
 
   if (image_info.func_mappings) {

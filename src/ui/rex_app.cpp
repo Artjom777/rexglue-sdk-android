@@ -48,6 +48,10 @@
 #include <filesystem>
 #include <string_view>
 
+#if REX_PLATFORM_ANDROID
+#include <SDL3/SDL_system.h>
+#endif
+
 REXCVAR_DEFINE_BOOL(window_presenter, true, "UI",
                     "Attach the emulated GPU's presenter to the window (off when the title presents "
                     "to the window with its own renderer)");
@@ -108,13 +112,36 @@ bool ReXApp::OnInitialize() {
 }
 
 bool ReXApp::SetupEnvironment() {
-  auto exe_dir = rex::filesystem::GetExecutableFolder();
-
   std::filesystem::path game_dir;
   std::string game_data_cvar = REXCVAR_GET(game_data_root);
   if (!game_data_cvar.empty()) {
     game_dir = game_data_cvar;
   }
+
+#if REX_PLATFORM_ANDROID
+  std::filesystem::path user_dir;
+  std::string user_data_cvar = REXCVAR_GET(user_data_root);
+  if (!user_data_cvar.empty()) {
+    user_dir = user_data_cvar;
+  } else {
+    const char* ext = SDL_GetAndroidExternalStoragePath();
+    if (ext && ext[0]) {
+      user_dir = std::filesystem::path(ext) / GetName();
+    } else {
+      const char* in = SDL_GetAndroidInternalStoragePath();
+      if (in && in[0]) {
+        user_dir = std::filesystem::path(in) / GetName();
+      } else {
+        user_dir = std::filesystem::path("/storage/emulated/0/Download") / GetName();
+      }
+    }
+  }
+  std::filesystem::path exe_dir = user_dir;
+  std::error_code ec;
+  std::filesystem::create_directories(user_dir, ec);
+  std::filesystem::create_directories(user_dir / "logs", ec);
+#else
+  auto exe_dir = rex::filesystem::GetExecutableFolder();
 
   // User data: cvar override, or platform user directory
   std::filesystem::path user_dir;
@@ -124,6 +151,7 @@ bool ReXApp::SetupEnvironment() {
   } else {
     user_dir = rex::filesystem::GetUserFolder() / GetName();
   }
+#endif
 
   // Update data: cvar override, or empty (opt-in)
   std::filesystem::path update_dir;
@@ -235,7 +263,8 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
     runtime_->set_imgui_drawer(imgui_drawer_.get());
   }
 
-  auto status = runtime_->Setup(ppc_info_, std::move(config_));
+  auto status = (ppc_info_.code_size > 0) ? runtime_->Setup(ppc_info_, std::move(config_))
+                                          : runtime_->Setup(std::move(config_));
   if (XFAILED(status)) {
     REXLOG_ERROR("Runtime setup failed: {:08X}", status);
     return false;

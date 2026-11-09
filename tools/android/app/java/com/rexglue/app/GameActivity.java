@@ -76,7 +76,39 @@ public class GameActivity extends SDLActivity {
             return args.toArray(new String[0]);
         }
 
-        // 2. Check candidate config files in Download, app data, and sdcard
+        // 2. Check APK bundled assets (rexglue.cfg / args.txt)
+        for (String assetName : new String[] { "rexglue.cfg", "args.txt" }) {
+            try (BufferedReader reader = new BufferedReader(new java.io.InputStreamReader(getAssets().open(assetName)))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    line = line.trim();
+                    if (line.isEmpty() || line.startsWith("#")) continue;
+                    if (line.startsWith("--")) {
+                        if (!args.contains(line)) args.add(line);
+                    } else if (line.startsWith("iso_0=")) {
+                        String v = "--game_data_root=" + line.substring("iso_0=".length()).trim();
+                        if (!args.contains(v)) args.add(v);
+                    } else if (line.startsWith("iso_path=")) {
+                        String v = "--game_data_root=" + line.substring("iso_path=".length()).trim();
+                        if (!args.contains(v)) args.add(v);
+                    } else if (line.startsWith("iso_1=")) {
+                        String v = "--disc2_data_root=" + line.substring("iso_1=".length()).trim();
+                        if (!args.contains(v)) args.add(v);
+                    } else if (line.startsWith("iso_2=")) {
+                        String v = "--disc3_data_root=" + line.substring("iso_2=".length()).trim();
+                        if (!args.contains(v)) args.add(v);
+                    } else if (line.startsWith("update_path=")) {
+                        String v = "--update_data_root=" + line.substring("update_path=".length()).trim();
+                        if (!args.contains(v)) args.add(v);
+                    }
+                }
+            } catch (Exception ignored) {}
+            if (!args.isEmpty()) {
+                return args.toArray(new String[0]);
+            }
+        }
+
+        // 3. Check candidate config files in Download, app data, and sdcard
         File downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
         ArrayList<File> candidateConfigFiles = new ArrayList<>();
         if (downloadDir != null && downloadDir.exists()) {
