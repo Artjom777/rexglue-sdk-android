@@ -33,7 +33,10 @@ PresentationSink* g_sink = nullptr;
 
 void RequireGlobalSink() {
   if (!g_sink) {
-    throw std::logic_error("rexglue::ui not initialised; call ui::Init first");
+    static std::shared_ptr<PresentationSink> s_fallback_sink =
+        std::make_shared<PresentationSink>(std::cout, false, false);
+    g_sink_ptr = s_fallback_sink;
+    g_sink = g_sink_ptr.get();
   }
 }
 

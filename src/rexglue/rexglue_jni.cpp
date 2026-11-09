@@ -32,6 +32,10 @@
 #include "ui/ui.h"
 #include <rex/codegen/manifest.h>
 #include <rex/filesystem/devices/disc_image_device.h>
+#include <rex/filesystem/devices/stfs_container_device.h>
+#include <rex/filesystem/devices/stfs_container_entry.h>
+#include <rex/filesystem/devices/stfs_container_file.h>
+#include <rex/filesystem/file.h>
 #include <rex/logging.h>
 #include <rex/logging/api.h>
 #include <rex/logging/types.h>
@@ -152,7 +156,11 @@ class AndroidSpdlogSink : public spdlog::sinks::base_sink<std::mutex> {
 
 /** Initializes rexglue::ui with our log stream to prevent RequireGlobalSink exceptions */
 static void EnsureUiInitialized() {
-  rexglue::ui::Shutdown();
+  rexglue::ui::InitOptions ui_opts;
+  ui_opts.tty = false;
+  ui_opts.color = false;
+  rexglue::ui::Init(ui_opts);
+
   auto sink = std::make_unique<rexglue::ui::PresentationSink>(g_android_log_stream, false, false);
   rexglue::ui::detail::SetGlobalSinkForTesting(std::move(sink));
 
@@ -188,6 +196,107 @@ static bool ExtractEntrypointXex(rex::filesystem::DiscImageDevice& disc, const s
     }
   }
   return false;
+}
+
+static bool IsStfsContainer(const std::filesystem::path& path) {
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec) || ec) return false;
+  FILE* fp = std::fopen(path.string().c_str(), "rb");
+  if (!fp) return false;
+  char magic[4] = {};
+  size_t n = std::fread(magic, 1, 4, fp);
+  std::fclose(fp);
+  if (n < 4) return false;
+  return (std::memcmp(magic, "CON ", 4) == 0 ||
+          std::memcmp(magic, "LIVE", 4) == 0 ||
+          std::memcmp(magic, "PIRS", 4) == 0);
+}
+
+static bool IsXexFile(const std::filesystem::path& path) {
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec) || ec) return false;
+  FILE* fp = std::fopen(path.string().c_str(), "rb");
+  if (!fp) return false;
+  char magic[4] = {};
+  size_t n = std::fread(magic, 1, 4, fp);
+  std::fclose(fp);
+  if (n < 4) return false;
+  return (std::memcmp(magic, "XEX2", 4) == 0 ||
+          std::memcmp(magic, "XEX1", 4) == 0 ||
+          std::memcmp(magic, "XEXP", 4) == 0);
+}
+
+static bool ExtractFsEntryToFile(rex::filesystem::Entry* entry, const std::filesystem::path& dest_path) {
+  if (!entry) return false;
+  std::error_code ec;
+  if (dest_path.has_parent_path()) {
+    std::filesystem::create_directories(dest_path.parent_path(), ec);
+  }
+  rex::filesystem::File* file = nullptr;
+  auto status = entry->Open(rex::filesystem::FileAccess::kGenericRead, &file);
+  if (status != X_STATUS_SUCCESS || !file) {
+    return false;
+  }
+  FILE* fp = std::fopen(dest_path.string().c_str(), "wb");
+  if (!fp) {
+    file->Destroy();
+    return false;
+  }
+  constexpr size_t kChunkSize = 2 * 1024 * 1024;
+  std::vector<uint8_t> buf(kChunkSize);
+  size_t offset = 0;
+  size_t total_size = entry->size();
+  while (offset < total_size) {
+    size_t to_read = std::min(total_size - offset, kChunkSize);
+    size_t bytes_read = 0;
+    status = file->ReadSync(std::span<uint8_t>(buf.data(), to_read), offset, &bytes_read);
+    if (bytes_read == 0) break;
+    size_t written = std::fwrite(buf.data(), 1, bytes_read, fp);
+    if (written != bytes_read) {
+      std::fclose(fp);
+      file->Destroy();
+      return false;
+    }
+    offset += bytes_read;
+    if (status != X_STATUS_SUCCESS && status != X_STATUS_END_OF_FILE) break;
+  }
+  std::fclose(fp);
+  file->Destroy();
+  return (offset == total_size);
+}
+
+static size_t CountDeviceFiles(rex::filesystem::Entry* entry) {
+  if (!entry) return 0;
+  if (!(entry->attributes() & rex::filesystem::kFileAttributeDirectory)) return 1;
+  size_t cnt = 0;
+  for (const auto& child : entry->children()) {
+    cnt += CountDeviceFiles(child.get());
+  }
+  return cnt;
+}
+
+static bool ExtractDeviceEntriesRecursive(rex::filesystem::Entry* entry,
+                                         const std::filesystem::path& current_dest,
+                                         std::function<void(const std::string&, size_t, size_t)> progress_cb,
+                                         size_t& cur_file, size_t total_files) {
+  if (!entry) return false;
+  std::error_code ec;
+  if (entry->attributes() & rex::filesystem::kFileAttributeDirectory) {
+    std::filesystem::create_directories(current_dest, ec);
+    for (const auto& child : entry->children()) {
+      auto child_dest = current_dest / child->name();
+      if (!ExtractDeviceEntriesRecursive(child.get(), child_dest, progress_cb, cur_file, total_files)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (progress_cb) {
+    progress_cb(entry->name(), cur_file + 1, total_files);
+  }
+  bool ok = ExtractFsEntryToFile(entry, current_dest);
+  cur_file++;
+  return ok;
 }
 
 }  // namespace
@@ -353,6 +462,7 @@ static jint RunCodegenMultiInternal(
     std::filesystem::create_directories(update_data_dir, ec);
 
     std::filesystem::path primary_xex;
+    bool tu_has_full_xex = false;
 
     // Step 1: Process Title Update if attached
     if (!update_path.empty() && std::filesystem::exists(update_path, ec) && !ec) {
@@ -360,9 +470,11 @@ static jint RunCodegenMultiInternal(
       if (rex::filesystem::DiscImageDevice::IsDiscImage(update_path)) {
         rex::filesystem::DiscImageDevice tu_disc("", update_path);
         if (tu_disc.Initialize()) {
+          SendLogToJava("[INFO] Title Update is an ISO disc image.");
           std::filesystem::path tu_xex = update_data_dir / "default.xex";
           if (ExtractEntrypointXex(tu_disc, tu_xex)) {
             SendLogToJava("[SUCCESS] Title Update default.xex detected and extracted!");
+            tu_has_full_xex = true;
             primary_xex = tu_xex;
           }
           if (mode == 2) {
@@ -370,12 +482,62 @@ static jint RunCodegenMultiInternal(
             tu_disc.ExtractAll(update_data_dir);
           }
         }
-      } else if (std::filesystem::is_regular_file(update_path, ec) && !ec) {
-        std::filesystem::path tu_xex = update_data_dir / "default.xex";
-        std::filesystem::copy_file(update_path, tu_xex,
-                                   std::filesystem::copy_options::overwrite_existing, ec);
-        SendLogToJava("[SUCCESS] Custom Title Update XEX copied.");
-        primary_xex = tu_xex;
+      } else if (IsStfsContainer(update_path)) {
+        SendLogToJava("[INFO] Title Update is an Xbox 360 STFS container (CON/LIVE/PIRS). Mounting...");
+        rex::filesystem::StfsContainerDevice tu_stfs("", update_path);
+        if (tu_stfs.Initialize()) {
+          SendLogToJava("[SUCCESS] STFS container mounted successfully.");
+          auto* root = tu_stfs.ResolvePath("");
+          if (root) {
+            size_t total_tu_files = CountDeviceFiles(root);
+            size_t cur_tu_file = 0;
+            SendLogToJava(("[INFO] Extracting " + std::to_string(total_tu_files) + " Title Update files...").c_str());
+            ExtractDeviceEntriesRecursive(root, update_data_dir, [](const std::string& name, size_t idx, size_t tot) {
+              if (idx % 10 == 0 || idx == tot) {
+                SendLogToJava(("[EXTRACT TU] (" + std::to_string(idx) + "/" + std::to_string(tot) + ") " + name).c_str());
+              }
+            }, cur_tu_file, total_tu_files);
+          }
+          // If default.xexp was extracted, copy to game_data so UserModule can find it as sibling to default.xex
+          std::filesystem::path tu_xexp = update_data_dir / "default.xexp";
+          if (std::filesystem::exists(tu_xexp, ec) && !ec) {
+            std::filesystem::copy_file(tu_xexp, game_data_dir / "default.xexp",
+                                       std::filesystem::copy_options::overwrite_existing, ec);
+            SendLogToJava("[SUCCESS] Found and attached delta patch: default.xexp (XEXP)");
+          }
+          // If a full default.xex was extracted from the container, mark it
+          std::filesystem::path tu_full_xex = update_data_dir / "default.xex";
+          if (std::filesystem::exists(tu_full_xex, ec) && !ec) {
+            SendLogToJava("[INFO] Found replacement executable: default.xex in Title Update");
+            tu_has_full_xex = true;
+            primary_xex = tu_full_xex;
+          }
+        } else {
+          SendLogToJava("[WARN] Failed to mount STFS container.");
+        }
+      } else if (IsXexFile(update_path)) {
+        // Direct XEX or XEXP executable
+        FILE* fp = std::fopen(update_path.c_str(), "rb");
+        char magic[4] = {};
+        if (fp) {
+          std::fread(magic, 1, 4, fp);
+          std::fclose(fp);
+        }
+        if (std::memcmp(magic, "XEXP", 4) == 0) {
+          std::filesystem::path tu_xexp = game_data_dir / "default.xexp";
+          std::filesystem::copy_file(update_path, tu_xexp,
+                                     std::filesystem::copy_options::overwrite_existing, ec);
+          SendLogToJava("[SUCCESS] Custom Title Update XEXP patch copied.");
+        } else {
+          std::filesystem::path tu_xex = update_data_dir / "default.xex";
+          std::filesystem::copy_file(update_path, tu_xex,
+                                     std::filesystem::copy_options::overwrite_existing, ec);
+          SendLogToJava("[SUCCESS] Custom Title Update XEX copied.");
+          tu_has_full_xex = true;
+          primary_xex = tu_xex;
+        }
+      } else {
+        SendLogToJava("[WARN] Unknown Title Update file format; skipping automatic extraction.");
       }
     }
 
@@ -418,15 +580,15 @@ static jint RunCodegenMultiInternal(
             SendLogToJava(("[ERROR] Failed to extract files from Disc " + std::to_string(i + 1)).c_str());
             return -13;
           }
-          if (i == 0 && primary_xex.empty()) {
+          if (i == 0 && !tu_has_full_xex) {
             std::filesystem::path disc_xex = game_data_dir / "default.xex";
             if (std::filesystem::exists(disc_xex, ec) && !ec) {
               primary_xex = disc_xex;
             }
           }
         } else {
-          // Mode 1: Split ISO mount - extract default.xex from Disc 1 if not already supplied by TU
-          if (i == 0 && primary_xex.empty()) {
+          // Mode 1: Split ISO mount - extract default.xex from Disc 1 if not replaced by TU
+          if (i == 0 && !tu_has_full_xex) {
             std::filesystem::path disc_xex = game_data_dir / "default.xex";
             if (ExtractEntrypointXex(disc, disc_xex)) {
               SendLogToJava("[SUCCESS] default.xex extracted from Disc 1 for PPC analysis.");
@@ -438,7 +600,7 @@ static jint RunCodegenMultiInternal(
         }
       } else {
         // Input is direct .xex file
-        if (primary_xex.empty()) {
+        if (!tu_has_full_xex) {
           std::filesystem::path disc_xex = game_data_dir / "default.xex";
           std::filesystem::copy_file(iso_path, disc_xex,
                                      std::filesystem::copy_options::overwrite_existing, ec);
