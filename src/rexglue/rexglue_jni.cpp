@@ -36,12 +36,15 @@
 #include <rex/filesystem/devices/stfs_container_entry.h>
 #include <rex/filesystem/devices/stfs_container_file.h>
 #include <rex/filesystem/file.h>
+#include <rex/system/xtypes.h>
 #include <rex/logging.h>
 #include <rex/logging/api.h>
 #include <rex/logging/types.h>
 #include <spdlog/sinks/base_sink.h>
 #include <rex/platform.h>
 #include <rex/version.h>
+
+typedef rex::X_STATUS X_STATUS;
 
 #define JNI_TAG "ReXGlue-JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, JNI_TAG, __VA_ARGS__)

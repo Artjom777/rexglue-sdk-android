@@ -121,7 +121,7 @@ Result<void> InitProject(const InitOptions& opts, const CliContext& ctx) {
     rex::filesystem::DiscImageDevice disc("", xexAbs);
     if (!disc.Initialize()) {
       return Err<void>(ErrorCategory::IO,
-                      "Failed to mount Xbox 360 ISO disc image: " + xexAbs.string());
+                       "Failed to mount Xbox 360 ISO disc image: " + xexAbs.string());
     }
     fs::path gameDataDir = projectRoot / "game_data";
     fs::create_directories(gameDataDir, ec);
