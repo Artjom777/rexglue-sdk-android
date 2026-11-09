@@ -49,7 +49,7 @@ import java.util.concurrent.Executors;
  * ReXGlue Studio Main Activity.
  * Provides on-device Xbox 360 PPC -> C++ recompilation, multi-disc ISO and Title Update support
  * directly on POCO X7 Pro without a PC.
- * Optimized for full MediaTek Dimensity 8400 power with LMK protection and persistent state.
+ * Optimized for MediaTek Dimensity 8400 power with LMK protection and instant state persistence.
  */
 public class MainActivity extends Activity {
     private static final String TAG = "ReXGlueStudio";
@@ -97,6 +97,7 @@ public class MainActivity extends Activity {
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private boolean isNativeLoaded = false;
+    private boolean isRestoring = false;
     private PowerManager.WakeLock wakeLock = null;
 
     // Native JNI Declarations
@@ -116,15 +117,15 @@ public class MainActivity extends Activity {
         // Crash safeguard: persist state and log before unhandled exception
         Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((thread, ex) -> {
-            saveState();
             try {
+                saveState();
                 File crashLog = new File(getExternalFilesDir("logs"), "crash.log");
                 crashLog.getParentFile().mkdirs();
                 try (PrintWriter pw = new PrintWriter(new FileWriter(crashLog, true))) {
                     pw.println("=== Crash at " + new Date() + " ===");
                     ex.printStackTrace(pw);
                 }
-            } catch (Exception ignored) {}
+            } catch (Throwable ignored) {}
             if (defaultHandler != null) {
                 defaultHandler.uncaughtException(thread, ex);
             }
@@ -133,7 +134,6 @@ public class MainActivity extends Activity {
         initViews();
         loadNativeLibraries();
         requestStoragePermissions();
-        requestBatteryOptimizationExemption();
         restoreState();
         updateDeviceInfo();
     }
@@ -187,39 +187,29 @@ public class MainActivity extends Activity {
             saveState();
         });
 
-        cbMaliVk.setOnCheckedChangeListener((btn, isChecked) -> saveState());
-        cbPageSize.setOnCheckedChangeListener((btn, isChecked) -> saveState());
-        cbBigCores.setOnCheckedChangeListener((btn, isChecked) -> saveState());
+        cbMaliVk.setOnCheckedChangeListener((btn, isChecked) -> {
+            if (!isRestoring) saveState();
+        });
+        cbPageSize.setOnCheckedChangeListener((btn, isChecked) -> {
+            if (!isRestoring) saveState();
+        });
+        cbBigCores.setOnCheckedChangeListener((btn, isChecked) -> {
+            if (!isRestoring) saveState();
+        });
 
-        etIsoPath1.addTextChangedListener(new SimpleTextWatcher(this::saveState));
-        etUpdatePath.addTextChangedListener(new SimpleTextWatcher(this::saveState));
-        etProjectName.addTextChangedListener(new SimpleTextWatcher(this::saveState));
+        etIsoPath1.addTextChangedListener(new SimpleTextWatcher(() -> {
+            if (!isRestoring) saveState();
+        }));
+        etUpdatePath.addTextChangedListener(new SimpleTextWatcher(() -> {
+            if (!isRestoring) saveState();
+        }));
+        etProjectName.addTextChangedListener(new SimpleTextWatcher(() -> {
+            if (!isRestoring) saveState();
+        }));
 
         btnCodegen.setOnClickListener(v -> startCodegen());
         btnBuildApk.setOnClickListener(v -> buildGameApk());
         btnLaunch.setOnClickListener(v -> launchGame());
-
-        // Default path suggestion if Xbox360 or Download folders exist and no saved state
-        SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
-        if (!prefs.contains(PREF_ISO_1)) {
-            File[] candidateDirs = new File[] {
-                new File(Environment.getExternalStorageDirectory(), "Xbox360"),
-                new File(Environment.getExternalStorageDirectory(), "Download")
-            };
-            for (File dir : candidateDirs) {
-                if (dir.exists()) {
-                    File[] files = dir.listFiles((d, name) -> {
-                        String lower = name.toLowerCase();
-                        return lower.endsWith(".iso") || lower.endsWith(".xiso") || lower.endsWith(".xex");
-                    });
-                    if (files != null && files.length > 0) {
-                        etIsoPath1.setText(files[0].getAbsolutePath());
-                        suggestProjectName(files[0].getAbsolutePath());
-                        break;
-                    }
-                }
-            }
-        }
     }
 
     private void setPortMode(int mode) {
@@ -271,7 +261,9 @@ public class MainActivity extends Activity {
         if (initialPath != null && !initialPath.isEmpty()) {
             et.setText(initialPath);
         }
-        et.addTextChangedListener(new SimpleTextWatcher(this::saveState));
+        et.addTextChangedListener(new SimpleTextWatcher(() -> {
+            if (!isRestoring) saveState();
+        }));
         row.addView(et);
         extraIsoInputs.add(et);
 
@@ -304,7 +296,7 @@ public class MainActivity extends Activity {
         btnRemove.setOnClickListener(v -> {
             containerExtraIsos.removeView(row);
             extraIsoInputs.remove(et);
-            saveState();
+            if (!isRestoring) saveState();
         });
         row.addView(btnRemove);
 
@@ -340,23 +332,12 @@ public class MainActivity extends Activity {
                     intent.setData(Uri.parse("package:" + getPackageName()));
                     startActivityForResult(intent, REQUEST_PERMISSIONS);
                 } catch (Exception e) {
-                    Intent intent = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
-                    startActivityForResult(intent, REQUEST_PERMISSIONS);
+                    try {
+                        Intent intent = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                        startActivityForResult(intent, REQUEST_PERMISSIONS);
+                    } catch (Exception ignored) {}
                 }
             }
-        }
-    }
-
-    private void requestBatteryOptimizationExemption() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-                if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
-                    Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                    intent.setData(Uri.parse("package:" + getPackageName()));
-                    startActivity(intent);
-                }
-            } catch (Exception ignored) {}
         }
     }
 
@@ -371,9 +352,19 @@ public class MainActivity extends Activity {
     }
 
     private void pickFile() {
-        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-        intent.setType("*/*");
-        startActivityForResult(intent, REQUEST_PICK_FILE);
+        try {
+            Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+            intent.setType("*/*");
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            startActivityForResult(intent, REQUEST_PICK_FILE);
+        } catch (Throwable t) {
+            try {
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.setType("*/*");
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                startActivityForResult(intent, REQUEST_PICK_FILE);
+            } catch (Throwable ignored) {}
+        }
     }
 
     @Override
@@ -382,10 +373,15 @@ public class MainActivity extends Activity {
         if (requestCode == REQUEST_PICK_FILE && resultCode == RESULT_OK && data != null) {
             Uri uri = data.getData();
             if (uri != null) {
+                try {
+                    getContentResolver().takePersistableUriPermission(
+                            uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (Throwable ignored) {}
+
                 final String resolvedPath = resolveImmediatePath(uri);
                 final int target = currentPickTarget;
 
-                // 1. Immediately determine and set path in UI so user sees it without delay
+                // 1. Immediately determine and set path in UI for the selected target
                 if (target == 0) {
                     etIsoPath1.setText(resolvedPath);
                     suggestProjectName(resolvedPath);
@@ -397,9 +393,11 @@ public class MainActivity extends Activity {
                         extraIsoInputs.get(idx).setText(resolvedPath);
                     }
                 }
+
+                // 2. Commit all paths synchronously to disk immediately
                 saveState();
 
-                // 2. Check if file is already accessible directly on storage or requires background caching
+                // 3. Inspect file or cache asynchronously if needed
                 final File fileOnDisk = new File(resolvedPath);
                 final String label = (target == 0) ? "Диск 1" : (target == -1) ? "Title Update" : ("Диск " + (target + 1));
 
@@ -409,8 +407,7 @@ public class MainActivity extends Activity {
                     } else {
                         appendLog("[TU] Выбран Title Update: " + resolvedPath);
                     }
-                } else {
-                    // Content URI from external provider: copy in background thread after path is already set
+                } else if (!"file".equalsIgnoreCase(uri.getScheme()) && uri.toString().startsWith("content://")) {
                     appendLog("[CACHE] Загрузка файла в локальное хранилище: " + fileOnDisk.getName() + "...");
                     progressBar.setVisibility(View.VISIBLE);
                     executor.execute(() -> {
@@ -426,7 +423,7 @@ public class MainActivity extends Activity {
                                 }
                                 saveState();
                             } else {
-                                appendLog("[ERROR] Не удалось скопировать файл из выбранного источника");
+                                appendLog("[WARN] Файл сохранен по пути: " + resolvedPath);
                             }
                         });
                     });
@@ -466,17 +463,18 @@ public class MainActivity extends Activity {
 
     /**
      * Resolves the real filesystem path immediately without copying multi-GB data.
-     * Checks direct storage, DocumentsContract, and MediaStore.
+     * Decodes URL components, checks direct storage, DocumentsContract, and MediaStore.
      */
     private String resolveImmediatePath(Uri uri) {
         if (uri == null) return "";
 
         if ("file".equalsIgnoreCase(uri.getScheme())) {
-            return uri.getPath();
+            String p = uri.getPath();
+            return (p != null) ? p : "";
         }
 
         if ("content".equalsIgnoreCase(uri.getScheme())) {
-            // Check DocumentsContract
+            // 1. Check DocumentsContract
             try {
                 if (DocumentsContract.isDocumentUri(this, uri)) {
                     String docId = DocumentsContract.getDocumentId(uri);
@@ -487,54 +485,73 @@ public class MainActivity extends Activity {
                         String type = parts[0];
                         String relPath = parts.length > 1 ? parts[1] : "";
 
+                        try {
+                            relPath = Uri.decode(relPath);
+                        } catch (Exception ignored) {}
+
                         if ("primary".equalsIgnoreCase(type)) {
                             File f = new File(Environment.getExternalStorageDirectory(), relPath);
                             if (f.exists()) return f.getAbsolutePath();
                             File fEmulated = new File("/storage/emulated/0", relPath);
                             if (fEmulated.exists()) return fEmulated.getAbsolutePath();
+                            File fSd = new File("/sdcard", relPath);
+                            if (fSd.exists()) return fSd.getAbsolutePath();
+                            return fEmulated.getAbsolutePath();
                         } else {
                             File fSec = new File("/storage/" + type + "/" + relPath);
-                            if (fSec.exists()) return fSec.getAbsolutePath();
+                            return fSec.getAbsolutePath();
                         }
                     } else if ("com.android.providers.downloads.documents".equals(authority) && docId != null) {
                         if (docId.startsWith("raw:")) {
-                            String rawPath = docId.substring(4);
-                            if (new File(rawPath).exists()) return rawPath;
+                            return docId.substring(4);
+                        }
+                    } else if ("com.android.providers.media.documents".equals(authority) && docId != null) {
+                        String[] parts = docId.split(":");
+                        if (parts.length > 1) {
+                            String id = parts[1];
+                            String p = queryColumn(MediaStore.Files.getContentUri("external"),
+                                    MediaStore.MediaColumns.DATA,
+                                    MediaStore.MediaColumns._ID + "=?", new String[]{id});
+                            if (p != null && !p.isEmpty()) return p;
                         }
                     }
                 }
-            } catch (Exception ignored) {}
+            } catch (Throwable ignored) {}
 
-            // Check MediaStore _data column
+            // 2. Direct MediaStore query
             try {
-                String[] proj = { MediaStore.MediaColumns.DATA };
-                try (Cursor cursor = getContentResolver().query(uri, proj, null, null, null)) {
-                    if (cursor != null && cursor.moveToFirst()) {
-                        int idx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA);
-                        if (idx != -1) {
-                            String directPath = cursor.getString(idx);
-                            if (directPath != null && new File(directPath).exists()) {
-                                return directPath;
-                            }
-                        }
-                    }
+                String direct = queryColumn(uri, MediaStore.MediaColumns.DATA, null, null);
+                if (direct != null && !direct.isEmpty()) {
+                    return direct;
                 }
-            } catch (Exception ignored) {}
+            } catch (Throwable ignored) {}
 
-            // Direct path not reachable directly: calculate target cache destination
+            // 3. Fallback to cache destination with display name
             String displayName = "game.iso";
-            try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
-                if (cursor != null && cursor.moveToFirst()) {
-                    int nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                    if (nameIdx >= 0) displayName = cursor.getString(nameIdx);
-                }
-            } catch (Exception ignored) {}
+            try {
+                String name = queryColumn(uri, OpenableColumns.DISPLAY_NAME, null, null);
+                if (name != null && !name.isEmpty()) displayName = name;
+            } catch (Throwable ignored) {}
 
             File cacheFile = new File(getExternalFilesDir("game_cache"), displayName);
             return cacheFile.getAbsolutePath();
         }
 
-        return uri.getPath();
+        String fallback = uri.getPath();
+        return (fallback != null) ? fallback : "";
+    }
+
+    private String queryColumn(Uri uri, String column, String selection, String[] selectionArgs) {
+        if (uri == null || column == null) return null;
+        try (Cursor cursor = getContentResolver().query(uri, new String[]{column}, selection, selectionArgs, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int idx = cursor.getColumnIndex(column);
+                if (idx != -1) {
+                    return cursor.getString(idx);
+                }
+            }
+        } catch (Throwable ignored) {}
+        return null;
     }
 
     private boolean copyUriToFile(Uri uri, File dest) {
@@ -556,47 +573,68 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void saveState() {
+    /**
+     * Saves all current inputs synchronously to disk (commit) immediately.
+     * Prevents reentrant calls during state restoration.
+     */
+    private synchronized void saveState() {
+        if (isRestoring) return;
         try {
             SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
             SharedPreferences.Editor editor = prefs.edit();
 
-            if (etIsoPath1 != null) editor.putString(PREF_ISO_1, etIsoPath1.getText().toString().trim());
-            if (etUpdatePath != null) editor.putString(PREF_UPDATE, etUpdatePath.getText().toString().trim());
-            if (etProjectName != null) editor.putString(PREF_PROJECT, etProjectName.getText().toString().trim());
+            String p1 = (etIsoPath1 != null) ? etIsoPath1.getText().toString().trim() : "";
+            editor.putString(PREF_ISO_1, p1);
+
+            String tu = (etUpdatePath != null) ? etUpdatePath.getText().toString().trim() : "";
+            editor.putString(PREF_UPDATE, tu);
+
+            String proj = (etProjectName != null) ? etProjectName.getText().toString().trim() : "";
+            editor.putString(PREF_PROJECT, proj);
+
             editor.putInt(PREF_MODE, selectedMode);
 
             if (cbMaliVk != null) editor.putBoolean(PREF_MALI_VK, cbMaliVk.isChecked());
             if (cbPageSize != null) editor.putBoolean(PREF_PAGE_SIZE, cbPageSize.isChecked());
             if (cbBigCores != null) editor.putBoolean(PREF_BIG_CORES, cbBigCores.isChecked());
 
-            editor.putInt(PREF_EXTRA_COUNT, extraIsoInputs.size());
-            for (int i = 0; i < extraIsoInputs.size(); i++) {
-                editor.putString(PREF_EXTRA_ISO_PREFIX + i, extraIsoInputs.get(i).getText().toString().trim());
+            // Save ALL extra ISO disc paths immediately
+            int count = extraIsoInputs.size();
+            editor.putInt(PREF_EXTRA_COUNT, count);
+            for (int i = 0; i < count; i++) {
+                EditText et = extraIsoInputs.get(i);
+                String extraPath = (et != null) ? et.getText().toString().trim() : "";
+                editor.putString(PREF_EXTRA_ISO_PREFIX + i, extraPath);
             }
 
-            editor.apply();
-        } catch (Exception e) {
+            editor.commit(); // Synchronous write to guarantee zero data loss
+            Log.i(TAG, "Saved state immediately: iso1=" + p1 + ", tu=" + tu + ", extraCount=" + count);
+        } catch (Throwable e) {
             Log.w(TAG, "saveState error: " + e.getMessage());
         }
     }
 
-    private void restoreState() {
+    /**
+     * Restores all saved file paths (Disc 1, all extra discs, Title Update) and settings.
+     * Guarded with isRestoring to prevent TextWatchers from wiping stored state.
+     */
+    private synchronized void restoreState() {
+        isRestoring = true;
         try {
             SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
 
             String iso1 = prefs.getString(PREF_ISO_1, "");
-            if (!iso1.isEmpty()) {
+            if (etIsoPath1 != null && !iso1.isEmpty()) {
                 etIsoPath1.setText(iso1);
             }
 
             String update = prefs.getString(PREF_UPDATE, "");
-            if (!update.isEmpty()) {
+            if (etUpdatePath != null && !update.isEmpty()) {
                 etUpdatePath.setText(update);
             }
 
             String proj = prefs.getString(PREF_PROJECT, "");
-            if (!proj.isEmpty()) {
+            if (etProjectName != null && !proj.isEmpty()) {
                 etProjectName.setText(proj);
             }
 
@@ -608,14 +646,41 @@ public class MainActivity extends Activity {
             if (cbBigCores != null) cbBigCores.setChecked(prefs.getBoolean(PREF_BIG_CORES, true));
 
             int extraCount = prefs.getInt(PREF_EXTRA_COUNT, 0);
-            containerExtraIsos.removeAllViews();
+            if (containerExtraIsos != null) {
+                containerExtraIsos.removeAllViews();
+            }
             extraIsoInputs.clear();
+
             for (int i = 0; i < extraCount; i++) {
                 String extraPath = prefs.getString(PREF_EXTRA_ISO_PREFIX + i, "");
                 addExtraIsoRow(extraPath);
             }
-        } catch (Exception e) {
+
+            // Fallback: If no saved disc 1, check standard candidate folders
+            if (iso1.isEmpty()) {
+                File[] candidateDirs = new File[] {
+                    new File(Environment.getExternalStorageDirectory(), "Xbox360"),
+                    new File(Environment.getExternalStorageDirectory(), "Download")
+                };
+                for (File dir : candidateDirs) {
+                    if (dir.exists()) {
+                        File[] files = dir.listFiles((d, name) -> {
+                            String lower = name.toLowerCase();
+                            return lower.endsWith(".iso") || lower.endsWith(".xiso") || lower.endsWith(".xex");
+                        });
+                        if (files != null && files.length > 0) {
+                            etIsoPath1.setText(files[0].getAbsolutePath());
+                            suggestProjectName(files[0].getAbsolutePath());
+                            break;
+                        }
+                    }
+                }
+            }
+            Log.i(TAG, "Restored state: iso1=" + iso1 + ", tu=" + update + ", extraCount=" + extraCount);
+        } catch (Throwable e) {
             Log.w(TAG, "restoreState error: " + e.getMessage());
+        } finally {
+            isRestoring = false;
         }
     }
 
@@ -640,6 +705,14 @@ public class MainActivity extends Activity {
 
     private void startFullPowerService() {
         try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null && (wakeLock == null || !wakeLock.isHeld())) {
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ReXGlue::FullPowerLocal");
+                wakeLock.acquire(120 * 60 * 1000L);
+            }
+        } catch (Throwable ignored) {}
+
+        try {
             Intent serviceIntent = new Intent(this, CodegenForegroundService.class);
             serviceIntent.setAction(CodegenForegroundService.ACTION_START);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -647,24 +720,16 @@ public class MainActivity extends Activity {
             } else {
                 startService(serviceIntent);
             }
-        } catch (Exception e) {
-            Log.w(TAG, "startFullPowerService warning: " + e.getMessage());
+        } catch (Throwable t) {
+            Log.w(TAG, "startFullPowerService safe bypass: " + t.getMessage());
         }
-
-        try {
-            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            if (pm != null && (wakeLock == null || !wakeLock.isHeld())) {
-                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ReXGlue::FullPowerLocal");
-                wakeLock.acquire(120 * 60 * 1000L);
-            }
-        } catch (Exception ignored) {}
     }
 
     private void stopFullPowerService() {
         if (wakeLock != null && wakeLock.isHeld()) {
             try {
                 wakeLock.release();
-            } catch (Exception ignored) {}
+            } catch (Throwable ignored) {}
             wakeLock = null;
         }
 
@@ -672,18 +737,18 @@ public class MainActivity extends Activity {
             Intent serviceIntent = new Intent(this, CodegenForegroundService.class);
             serviceIntent.setAction(CodegenForegroundService.ACTION_STOP);
             startService(serviceIntent);
-        } catch (Exception ignored) {}
+        } catch (Throwable ignored) {}
     }
 
     private void startCodegen() {
         final List<String> isoList = new ArrayList<>();
         String p1 = etIsoPath1.getText().toString().trim();
-        if (!p1.isEmpty() && new File(p1).exists()) {
+        if (!p1.isEmpty()) {
             isoList.add(p1);
         }
         for (EditText et : extraIsoInputs) {
             String p = et.getText().toString().trim();
-            if (!p.isEmpty() && new File(p).exists()) {
+            if (!p.isEmpty()) {
                 isoList.add(p);
             }
         }
@@ -784,8 +849,6 @@ public class MainActivity extends Activity {
         final File portDir = new File(getExternalFilesDir("ports"), projectName);
         final int mode = selectedMode;
 
-        startFullPowerService();
-
         appendLog("\n========================================");
         appendLog("[BUILD] Сборка APK порта для " + projectName);
         appendLog("[INFO] Режим: " + (mode == 2 ? "Standalone APK (все ресурсы внутри)" : "Монтирование ISO (компактный APK)"));
@@ -802,8 +865,6 @@ public class MainActivity extends Activity {
         }
         appendLog("[SUCCESS] Сборка готова к установке и запуску!");
         Toast.makeText(this, "Готово к сборке APK для " + projectName, Toast.LENGTH_SHORT).show();
-
-        stopFullPowerService();
     }
 
     private void launchGame() {
@@ -860,6 +921,8 @@ public class MainActivity extends Activity {
         SimpleTextWatcher(Runnable onChange) { this.onChange = onChange; }
         @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
         @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-        @Override public void afterTextChanged(Editable s) { if (onChange != null) onChange.run(); }
+        @Override public void afterTextChanged(Editable s) {
+            if (onChange != null) onChange.run();
+        }
     }
 }

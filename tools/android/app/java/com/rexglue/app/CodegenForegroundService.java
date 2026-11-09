@@ -18,6 +18,7 @@ import android.util.Log;
  * and holds a CPU WakeLock during heavy Xbox 360 decompilation & packaging.
  * Prevents Android Low Memory Killer (LMK) from killing the process when
  * utilizing full Dimensity 8400 CPU/RAM power on POCO X7 Pro.
+ * Crash-safe implementation.
  */
 public class CodegenForegroundService extends Service {
     private static final String TAG = "CodegenForeground";
@@ -31,17 +32,24 @@ public class CodegenForegroundService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        createNotificationChannel();
+        try {
+            createNotificationChannel();
+        } catch (Throwable t) {
+            Log.w(TAG, "Notification channel warning: " + t.getMessage());
+        }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
-            stopForegroundService();
-            return START_NOT_STICKY;
+        try {
+            if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+                stopForegroundService();
+                return START_NOT_STICKY;
+            }
+            startFullPowerMode();
+        } catch (Throwable t) {
+            Log.e(TAG, "onStartCommand safe caught: " + t.getMessage());
         }
-
-        startFullPowerMode();
         return START_NOT_STICKY;
     }
 
@@ -53,40 +61,50 @@ public class CodegenForegroundService extends Service {
                 wakeLock.acquire(120 * 60 * 1000L); // 120 minutes max timeout safeguard
                 Log.i(TAG, "Acquired WakeLock for full performance execution");
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             Log.w(TAG, "WakeLock acquisition warning: " + e.getMessage());
         }
 
-        Notification notification = buildForegroundNotification(
-                "ReXGlue Studio (POCO X7 Pro)",
-                "Выполняется обработка на полной мощности (LMK защита активна)");
+        try {
+            Notification notification = buildForegroundNotification(
+                    "ReXGlue Studio (POCO X7 Pro)",
+                    "Выполняется обработка на полной мощности (LMK защита активна)");
 
-        if (Build.VERSION.SDK_INT >= 34) {
-            try {
-                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
-            } catch (Throwable t) {
+            if (Build.VERSION.SDK_INT >= 34) {
                 try {
-                    startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
-                } catch (Throwable t2) {
-                    startForeground(NOTIFICATION_ID, notification);
+                    startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+                } catch (Throwable t) {
+                    try {
+                        startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+                    } catch (Throwable t2) {
+                        startForeground(NOTIFICATION_ID, notification);
+                    }
                 }
+            } else {
+                startForeground(NOTIFICATION_ID, notification);
             }
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
+            Log.i(TAG, "CodegenForegroundService active: oom_score_adj protected against LMK");
+        } catch (Throwable t) {
+            Log.w(TAG, "startForeground safe bypass: " + t.getMessage());
         }
-
-        Log.i(TAG, "CodegenForegroundService active: oom_score_adj protected against LMK");
     }
 
     private void stopForegroundService() {
-        if (wakeLock != null && wakeLock.isHeld()) {
-            try {
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) {
                 wakeLock.release();
-            } catch (Exception ignored) {}
-            wakeLock = null;
-        }
-        stopForeground(true);
-        stopSelf();
+            }
+        } catch (Throwable ignored) {}
+        wakeLock = null;
+
+        try {
+            stopForeground(true);
+        } catch (Throwable ignored) {}
+
+        try {
+            stopSelf();
+        } catch (Throwable ignored) {}
+
         Log.i(TAG, "CodegenForegroundService stopped");
     }
 
@@ -129,8 +147,10 @@ public class CodegenForegroundService extends Service {
 
     @Override
     public void onDestroy() {
-        super.onDestroy();
-        stopForegroundService();
+        try {
+            super.onDestroy();
+            stopForegroundService();
+        } catch (Throwable ignored) {}
     }
 
     @Override
