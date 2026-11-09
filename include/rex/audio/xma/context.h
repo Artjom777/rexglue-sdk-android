@@ -115,11 +115,16 @@ struct XMA_CONTEXT_DATA {
   uint32_t unk_dwords_10_15[6];  // reserved?
 
   explicit XMA_CONTEXT_DATA(const void* ptr) {
+    if (!ptr) {
+      std::memset(this, 0, sizeof(XMA_CONTEXT_DATA));
+      return;
+    }
     memory::copy_and_swap(reinterpret_cast<uint32_t*>(this), reinterpret_cast<const uint32_t*>(ptr),
                           sizeof(XMA_CONTEXT_DATA) / 4);
   }
 
   void Store(void* ptr) {
+    if (!ptr) return;
     memory::copy_and_swap(reinterpret_cast<uint32_t*>(ptr), reinterpret_cast<const uint32_t*>(this),
                           sizeof(XMA_CONTEXT_DATA) / 4);
   }
@@ -279,18 +284,22 @@ class XmaContext {
   AVPacket* av_packet_ = nullptr;
   AVCodec* av_codec_ = nullptr;
   AVCodecContext* av_context_ = nullptr;
+  // Opened contexts of other formats (sample rate, channels): sounds switch between a few, and
+  // opening one builds its MDCT / sine window / VLC tables (PrepareDecoder).
+  std::array<AVCodecContext*, 1> spare_contexts_{};  // ~450 KB each (8 channels of output)
+  uint32_t next_spare_ = 0;
   AVFrame* av_frame_ = nullptr;
 
   // Packet data buffer (two packets worth for split frame handling)
-  std::array<uint8_t, kBytesPerPacketData * 2> input_buffer_;
+  alignas(16) std::array<uint8_t, kBytesPerPacketData * 2> input_buffer_;
   // First byte contains bit offset information
-  std::array<uint8_t, 1 + 4096> xma_frame_;
+  alignas(16) std::array<uint8_t, 1 + 4096> xma_frame_;
   // Conversion buffer for up to 2-channel frame
-  std::array<uint8_t, kBytesPerFrameChannel * 2> raw_frame_;
+  alignas(16) std::array<uint8_t, kBytesPerFrameChannel * 2> raw_frame_;
   // Freshly decoded block, before start-padding realignment
-  std::array<uint8_t, kBytesPerFrameChannel * 2> decoded_frame_;
+  alignas(16) std::array<uint8_t, kBytesPerFrameChannel * 2> decoded_frame_;
   // Tail of the previous decoded block, awaiting the next block's padding head
-  std::array<uint8_t, kBytesPerFrameChannel * 2> carry_frame_;
+  alignas(16) std::array<uint8_t, kBytesPerFrameChannel * 2> carry_frame_;
 
   // Output buffer tracking
   int32_t remaining_subframe_blocks_in_output_buffer_ = 0;

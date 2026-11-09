@@ -143,6 +143,13 @@ if(NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     add_compile_options(-msse4.1)
 endif()
 
+if(ANDROID)
+    add_link_options(
+        "-Wl,-z,max-page-size=16384"
+        "-Wl,-z,common-page-size=16384"
+    )
+endif()
+
 # Platform detection (supports AMD64 and ARM64)
 set(REX_TARGET_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
 if(APPLE AND CMAKE_OSX_ARCHITECTURES)
@@ -162,6 +169,11 @@ if(WIN32)
         message(FATAL_ERROR "Unsupported Windows architecture: ${REX_TARGET_PROCESSOR}")
     endif()
     add_compile_definitions(REX_PLATFORM_WINDOWS=1)
+elseif(ANDROID)
+    # Android (NDK): Linux kernel + Bionic; platform.h also sets REX_PLATFORM_ANDROID.
+    set(REX_PLATFORM "android-arm64")
+    add_compile_definitions(REX_PLATFORM_LINUX=1)
+    add_compile_definitions(REX_PLATFORM_ANDROID=1)
 elseif(UNIX AND NOT APPLE)
     if(REX_TARGET_PROCESSOR MATCHES "AMD64|x86_64")
         set(REX_PLATFORM "linux-amd64")
@@ -174,6 +186,9 @@ elseif(UNIX AND NOT APPLE)
 elseif(APPLE)
     if(REX_TARGET_PROCESSOR MATCHES "AMD64|x86_64")
         set(REX_PLATFORM "mac-amd64")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(REX_IOS TRUE)
+        set(REX_PLATFORM "ios-arm64")
     elseif(REX_TARGET_PROCESSOR MATCHES "aarch64|ARM64|arm64")
         set(REX_PLATFORM "mac-arm64")
     else()
@@ -265,7 +280,10 @@ add_subdirectory(src/graphics)
 add_subdirectory(src/system)
 add_subdirectory(src/kernel)
 add_subdirectory(src/codegen)
-add_subdirectory(src/rexglue)
+# The codegen tool runs on the build host only; an iOS build is runtime libraries alone.
+if(NOT REX_IOS)
+    add_subdirectory(src/rexglue)
+endif()
 
 # Add tests subdirectory if tests are enabled
 if(REXGLUE_BUILD_TESTS)

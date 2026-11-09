@@ -25,6 +25,10 @@ target_link_libraries(rexglue
         rexcodegen
 )
 
+if(ANDROID)
+    target_link_libraries(rexglue PRIVATE android log)
+endif()
+
 rex_target_pch(rexglue <CLI/CLI.hpp>)
 
 # Delay-load FidelityFX DLLs so rexglue can run in tool mode without them.

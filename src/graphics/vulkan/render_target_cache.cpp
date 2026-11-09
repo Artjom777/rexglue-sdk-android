@@ -3734,6 +3734,14 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(TransferShaderKey key)
         }
       }
     }
+    // For stencil bit output from a depth source, the depth texture isn't
+    // loaded, so nothing above packs anything - use the stencil directly for the
+    // discard check. Otherwise no sample is discarded and every bit is written
+    // (stencil becomes 0xFF wherever the fallback for missing
+    // VK_EXT_shader_stencil_export is used, e.g. on Nvidia).
+    if (packed == spv::NoResult && mode.output == TransferOutput::kStencilBit) {
+      packed = source_stencil[0];
+    }
     switch (mode.output) {
       case TransferOutput::kColor: {
         // Unless a special path was taken, unpack the raw 32bpp value into the

@@ -19,9 +19,13 @@
 
 #include <fcntl.h>
 
+#include <rex/platform.h>
+
 #if REX_PLATFORM_MAC
 #include <mach/mach.h>
+#if !REX_PLATFORM_IOS
 #include <mach/mach_vm.h>
+#endif
 #include <mach/vm_region.h>
 #endif  // REX_PLATFORM_MAC
 
@@ -51,10 +55,7 @@
 #include <dlfcn.h>
 #include <sys/ioctl.h>
 
-#include <linux/ashmem.h>
-
-// TODO(tomc): Android or maybe na. idk
-// #include "xenia/base/main_android.h"
+#include <sys/mman.h>
 #endif
 
 namespace rex {
@@ -84,32 +85,6 @@ static std::string MakeShmName(const std::filesystem::path& path) {
   return name;
 }
 
-#if REX_PLATFORM_ANDROID
-// May be null if no dynamically loaded functions are required.
-static void* libandroid_;
-// API 26+.
-static int (*android_ASharedMemory_create_)(const char* name, size_t size);
-
-void AndroidInitialize() {
-  if (rex::GetAndroidApiLevel() >= 26) {
-    libandroid_ = dlopen("libandroid.so", RTLD_NOW);
-    assert_not_null(libandroid_);
-    if (libandroid_) {
-      android_ASharedMemory_create_ = reinterpret_cast<decltype(android_ASharedMemory_create_)>(
-          dlsym(libandroid_, "ASharedMemory_create"));
-      assert_not_null(android_ASharedMemory_create_);
-    }
-  }
-}
-
-void AndroidShutdown() {
-  android_ASharedMemory_create_ = nullptr;
-  if (libandroid_) {
-    dlclose(libandroid_);
-    libandroid_ = nullptr;
-  }
-}
-#endif
 
 size_t page_size() {
   return getpagesize();
@@ -278,9 +253,11 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
 
   int flags = MAP_PRIVATE | MAP_ANONYMOUS;
 #if REX_PLATFORM_MAC
+#if !REX_PLATFORM_IOS  // iOS refuses MAP_JIT without the JIT entitlement; nothing here executes.
   if (access == PageAccess::kExecuteReadWrite || access == PageAccess::kExecuteReadOnly) {
     flags |= MAP_JIT;
   }
+#endif
   if (base_address) {
     flags |= MAP_FIXED;
   }
@@ -381,9 +358,20 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
   mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
   mach_port_t object_name;
 
+#if REX_PLATFORM_IOS
+  // mach_vm.h is unsupported in the iOS SDK; vm_region_64 is the same call with vm_* types.
+  vm_address_t vm_address = static_cast<vm_address_t>(address);
+  vm_size_t vm_size = 0;
+  kern_return_t kr =
+      vm_region_64(mach_task_self(), &vm_address, &vm_size, VM_REGION_BASIC_INFO_64,
+                   reinterpret_cast<vm_region_info_t>(&info), &info_count, &object_name);
+  address = vm_address;
+  region_size = vm_size;
+#else
   kern_return_t kr =
       mach_vm_region(mach_task_self(), &address, &region_size, VM_REGION_BASIC_INFO_64,
                      reinterpret_cast<vm_region_info_t>(&info), &info_count, &object_name);
+#endif
   if (kr != KERN_SUCCESS) {
     return false;
   }
@@ -432,28 +420,39 @@ bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
 FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, size_t length,
                                           PageAccess access, bool commit) {
 #if REX_PLATFORM_ANDROID
-  // TODO(Triang3l): Check if memfd can be used instead on API 30+.
-  if (android_ASharedMemory_create_) {
-    int sharedmem_fd = android_ASharedMemory_create_(path.c_str(), length);
-    return sharedmem_fd >= 0 ? static_cast<FileMappingHandle>(sharedmem_fd)
-                             : kFileMappingHandleInvalid;
-  }
-
-  // Use /dev/ashmem on API versions below 26, which added ASharedMemory.
-  // /dev/ashmem was disabled on API 29 for apps targeting it.
-  // https://chromium.googlesource.com/chromium/src/+/master/third_party/ashmem/ashmem-dev.c
-  int ashmem_fd = open("/" ASHMEM_NAME_DEF, O_RDWR);
-  if (ashmem_fd < 0) {
+  // memfd (API 30+, the minimum this port targets): anonymous, sparse until written, like the
+  // /dev/shm file on Linux. Grows with ftruncate; nothing to unlink.
+  (void)access;
+  (void)commit;
+  int fd = memfd_create(path.filename().c_str(), MFD_CLOEXEC);
+  if (fd < 0) {
     return kFileMappingHandleInvalid;
   }
-  char ashmem_name[ASHMEM_NAME_LEN];
-  strlcpy(ashmem_name, path.c_str(), rex::countof(ashmem_name));
-  if (ioctl(ashmem_fd, ASHMEM_SET_NAME, ashmem_name) < 0 ||
-      ioctl(ashmem_fd, ASHMEM_SET_SIZE, length) < 0) {
-    close(ashmem_fd);
+  if (ftruncate64(fd, static_cast<off64_t>(length)) != 0) {
+    close(fd);
     return kFileMappingHandleInvalid;
   }
-  return static_cast<FileMappingHandle>(ashmem_fd);
+  return static_cast<FileMappingHandle>(fd);
+#elif REX_PLATFORM_IOS
+  // The iOS sandbox denies shm_open: back the guest memory with a sparse file in the app's tmp
+  // directory instead, unlinked at once (the fd keeps it alive; a crash leaves nothing behind).
+  // The views alias it with MAP_SHARED exactly as they would a shm object.
+  (void)access;
+  (void)commit;
+  const char* tmp_dir = std::getenv("TMPDIR");
+  std::filesystem::path backing = std::filesystem::path(tmp_dir ? tmp_dir : "/tmp") / path.filename();
+  int fd = open(backing.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0) {
+    REXSYS_ERROR("guest memory backing file {} failed: {}", backing.string(), strerror(errno));
+    return kFileMappingHandleInvalid;
+  }
+  unlink(backing.c_str());
+  if (ftruncate(fd, static_cast<off_t>(length)) != 0) {
+    REXSYS_ERROR("guest memory backing file truncate to 0x{:X} failed: {}", length, strerror(errno));
+    close(fd);
+    return kFileMappingHandleInvalid;
+  }
+  return static_cast<FileMappingHandle>(fd);
 #else
   int oflag;
   switch (access) {
@@ -483,13 +482,17 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
     shm_unlink(full_path.c_str());
     return kFileMappingHandleInvalid;
   }
+  // Nothing opens the object by name again: unlink it now, so its memory goes with the last fd and
+  // mapping. Unlinked only at a clean shutdown, every killed or crashed run left its guest memory
+  // behind until reboot (it filled 30 GB of swap on an 8 GB Mac).
+  shm_unlink(full_path.c_str());
   return static_cast<FileMappingHandle>(ret);
 #endif
 }
 
 void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path) {
   close(static_cast<int>(handle));
-#if !REX_PLATFORM_ANDROID
+#if !REX_PLATFORM_ANDROID && !REX_PLATFORM_IOS
   auto full_path = MakeShmName(path);
   shm_unlink(full_path.c_str());
 #endif

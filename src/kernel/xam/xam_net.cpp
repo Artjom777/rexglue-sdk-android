@@ -135,7 +135,7 @@ void LoadSockaddr(const uint8_t* ptr, sockaddr* out_addr) {
       auto in_addr = reinterpret_cast<sockaddr_in*>(out_addr);
       in_addr->sin_port = memory::load_and_swap<uint16_t>(ptr + 2);
       // Maybe? Depends on type.
-      in_addr->sin_addr.s_addr = *(uint32_t*)(ptr + 4);
+      std::memcpy(&in_addr->sin_addr.s_addr, ptr + 4, sizeof(uint32_t));
       break;
     }
     default:

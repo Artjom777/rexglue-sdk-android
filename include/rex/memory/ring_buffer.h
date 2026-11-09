@@ -36,7 +36,7 @@ class RingBuffer {
   ring_size_t read_offset() const { return read_offset_; }
   uintptr_t read_ptr() const { return uintptr_t(buffer_) + static_cast<uintptr_t>(read_offset_); }
   void set_read_offset(size_t offset) {
-    read_offset_ = static_cast<ring_size_t>(offset) % capacity_;
+    read_offset_ = capacity_ ? static_cast<ring_size_t>(offset) % capacity_ : 0;
   }
   ring_size_t read_count() const {
     ring_size_t read_offs = read_offset_;
@@ -52,7 +52,7 @@ class RingBuffer {
   ring_size_t write_offset() const { return write_offset_; }
   uintptr_t write_ptr() const { return uintptr_t(buffer_) + static_cast<uintptr_t>(write_offset_); }
   void set_write_offset(size_t offset) {
-    write_offset_ = static_cast<ring_size_t>(offset) % capacity_;
+    write_offset_ = capacity_ ? static_cast<ring_size_t>(offset) % capacity_ : 0;
   }
   ring_size_t write_count() const {
     ring_size_t read_offs = read_offset_;
@@ -125,19 +125,17 @@ class RingBuffer {
 };
 
 // Fast path for GPU command processor - the hottest path.
-// Direct load bypasses generic Read() + memcpy.
-// Uses == (not >=) for wrap check: capacity must be a multiple of 4,
-// so next_read_offset can only land exactly at capacity, never past it.
 template <>
 inline uint32_t RingBuffer::ReadAndSwap<uint32_t>() {
   assert_true(capacity_ >= 4);
   ring_size_t read_offs = read_offset_;
   ring_size_t next_read_offs = read_offs + 4;
-  if (next_read_offs == capacity_) [[unlikely]] {
+  if (next_read_offs >= capacity_) [[unlikely]] {
     next_read_offs = 0;
   }
   read_offset_ = next_read_offs;
-  uint32_t ring_value = *(uint32_t*)(buffer_ + read_offs);
+  uint32_t ring_value = 0;
+  std::memcpy(&ring_value, buffer_ + read_offs, sizeof(uint32_t));
   return rex::byte_swap(ring_value);
 }
 

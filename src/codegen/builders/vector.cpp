@@ -113,15 +113,29 @@ bool build_vnmsubfp(BuilderContext& ctx) {
   return true;
 }
 
+// AltiVec vmaxfp/vminfp return a QNaN when either operand is a NaN; SSE maxps/minps return the
+// second operand instead, so a clamp like max(min(x, 1), 0) turned NaN into 1.0 (GTA V: audio
+// gains/filters that are NaN on the console played at full level). Select a NaN (a + b) there.
+static void emit_vec_fp_minmax_nan(BuilderContext& ctx, const char* simd_op) {
+  auto vD = ctx.v(ctx.insn.operands[0]);
+  auto vA = ctx.v(ctx.insn.operands[1]);
+  auto vB = ctx.v(ctx.insn.operands[2]);
+  ctx.println("\t{{ simde__m128 a_ = simde_mm_load_ps({}.f32), b_ = simde_mm_load_ps({}.f32);", vA, vB);
+  ctx.println("\t  simde__m128 n_ = simde_mm_cmpunord_ps(a_, b_);");
+  ctx.println("\t  simde_mm_store_ps({}.f32, simde_mm_or_ps(simde_mm_andnot_ps(n_, simde_mm_{}_ps(a_, b_)), "
+              "simde_mm_and_ps(n_, simde_mm_add_ps(a_, b_)))); }}",
+              vD, simd_op);
+}
+
 bool build_vmaxfp(BuilderContext& ctx) {
   ctx.emit_set_flush_mode(true);
-  ctx.emit_vec_fp_binary("max");
+  emit_vec_fp_minmax_nan(ctx, "max");
   return true;
 }
 
 bool build_vminfp(BuilderContext& ctx) {
   ctx.emit_set_flush_mode(true);
-  ctx.emit_vec_fp_binary("min");
+  emit_vec_fp_minmax_nan(ctx, "min");
   return true;
 }
 
@@ -163,9 +177,18 @@ bool build_vexptefp(BuilderContext& ctx) {
   ctx.println("\t\tsimde__m128i exp_bits = simde_mm_slli_epi32(");
   ctx.println("\t\t\tsimde_mm_add_epi32(simde_mm_cvttps_epi32(n), simde_mm_set1_epi32(127)), 23);");
   ctx.println(
-      "\t\tsimde_mm_store_ps({}.f32, "
-      "simde_mm_mul_ps(p, simde_mm_castsi128_ps(exp_bits)));",
-      vD);
+      "\t\tsimde__m128 r = simde_mm_mul_ps(p, simde_mm_castsi128_ps(exp_bits));");
+  // Out of range the exponent bits above wrap: 2^-200 came out as -7e16 and 2^-inf as NaN, so
+  // pow(x, y) = 2^(y log2 x) for x near 0 (GTA V audio gains) gave huge gains instead of 0.
+  // AltiVec: below the normal range 0 (non-Java mode flushes the denormals), from 128 +inf,
+  // NaN stays NaN.
+  ctx.println(
+      "\t\tr = simde_mm_andnot_ps(simde_mm_cmplt_ps(x, simde_mm_set1_ps(-126.0f)), r);");
+  ctx.println(
+      "\t\tr = simde_mm_blendv_ps(r, simde_mm_castsi128_ps(simde_mm_set1_epi32(0x7F800000)), "
+      "simde_mm_cmpge_ps(x, simde_mm_set1_ps(128.0f)));");
+  ctx.println("\t\tr = simde_mm_blendv_ps(r, x, simde_mm_cmpunord_ps(x, x));");
+  ctx.println("\t\tsimde_mm_store_ps({}.f32, r);", vD);
   ctx.println("\t}}");
   return true;
 }

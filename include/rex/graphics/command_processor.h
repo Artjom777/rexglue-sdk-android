@@ -254,6 +254,7 @@ class CommandProcessor {
 
   std::unique_ptr<rex::thread::Event> write_ptr_index_event_;
   std::atomic<uint32_t> write_ptr_index_;
+  uint32_t lagged_ptr_ = 0;  // --gpu_skip_rendering_lag_ms: last write pointer old enough to run
 
   // Some titles submit writes beyond the emulated register file range in PM4
   // packets. Preserve these values so dependent packet logic can still observe

@@ -26,8 +26,42 @@ Latest SDK builds and releases are published on [GitHub Releases](https://github
 
 | Channel | CI | Download |
 | --- | --- | --- |
-| Release | [![win-amd64](https://github.com/rexglue/rexglue-sdk/actions/workflows/build-win-amd64.yaml/badge.svg)](https://github.com/rexglue/rexglue-sdk/actions/workflows/build-win-amd64.yaml) [![linux-amd64](https://github.com/rexglue/rexglue-sdk/actions/workflows/build-linux-amd64.yaml/badge.svg)](https://github.com/rexglue/rexglue-sdk/actions/workflows/build-linux-amd64.yaml) [![linux-arm64](https://github.com/rexglue/rexglue-sdk/actions/workflows/build-linux-aarch64.yaml/badge.svg)](https://github.com/rexglue/rexglue-sdk/actions/workflows/build-linux-aarch64.yaml) | [Latest stable](https://github.com/rexglue/rexglue-sdk/releases/latest) |
-| Nightly | [![nightly](https://github.com/rexglue/rexglue-sdk/actions/workflows/nightly.yaml/badge.svg)](https://github.com/rexglue/rexglue-sdk/actions/workflows/nightly.yaml) | [Latest pre-release](https://github.com/rexglue/rexglue-sdk/releases?q=prerelease%3Atrue) |
+| Release | [![win-amd64](https://github.com/rexglue/rexglue-sdk/actions/workflows/build-win-amd64.yaml/badge.svg)](https://github.com/rexglue/rexglue-sdk/actions/workflows/build-win-amd64.yaml) [![linux-amd64](https://github.com/rexglue/rexglue-sdk/actions/workflows/build-linux-amd64.yaml/badge.svg)](https://github.com/rexglue/rexglue-sdk/actions/workflows/build-linux-amd64.yaml) [![linux-arm64](https://github.com/rexglue/rexglue-sdk/actions/workflows/build-linux-aarch64.yaml/badge.svg)](https://github.com/rexglue/rexglue-sdk/actions/workflows/build-linux-aarch64.yaml) [![android-arm64](https://github.com/Artjom777/rexglue-sdk-android/actions/workflows/build-android.yaml/badge.svg)](https://github.com/Artjom777/rexglue-sdk-android/actions/workflows/build-android.yaml) | [Latest stable](https://github.com/Artjom777/rexglue-sdk-android/releases/latest) |
+| Nightly | [![nightly](https://github.com/rexglue/rexglue-sdk/actions/workflows/nightly.yaml/badge.svg)](https://github.com/rexglue/rexglue-sdk/actions/workflows/nightly.yaml) | [Latest pre-release](https://github.com/Artjom777/rexglue-sdk-android/releases?q=prerelease%3Atrue) |
+
+## Android & POCO X7 Pro Support
+
+ReXGlue has native Android ARM64 support with dedicated optimizations for the **POCO X7 Pro** (MediaTek Dimensity 8400 / ARMv9 / Mali-G720 GPU):
+- **On-Device Codegen**: Run `rexglue` CLI directly on Android (via Termux, PRoot, or shell) to decompile Xbox 360 `default.xex` into C++ code without a PC.
+- **MediaTek / Mali-G720 Vulkan Compatibility**:
+  - Relaxed geometry shader / fillModeNonSolid / atomics requirements for Mali GPU architecture.
+  - 16KB page alignment (`-Wl,-z,max-page-size=16384`) for Android 15 / HyperOS 2.0 compatibility.
+  - Safe memory mapping with `MAP_FIXED_NOREPLACE` to protect Android ART, Scudo and Vulkan driver memory spaces.
+  - MediaTek Dimensity big/prime cluster core affinity (`REX_THREAD_BIG_CORES=1`).
+  - Android SIGBUS recovery and POSIX exception unwinding via `process_vm_readv`.
+- **Packaging Tools**: Scripts under `tools/android/` for building the SDK, running codegen, compiling ports, and generating signed APKs.
+
+### Quickstart on Android / POCO X7 Pro (No PC Needed)
+
+1. **Run Codegen directly on the phone**:
+   ```bash
+   # Decompile any Xbox 360 game default.xex into C++:
+   ./tools/android/run_codegen.sh /sdcard/XboxGames/MyGame/default.xex MyGame
+   ```
+
+2. **Compile the game for Android**:
+   ```bash
+   ./tools/android/build_game.sh ./MyGame
+   ```
+
+3. **Package as Android APK**:
+   ```bash
+   ./tools/android/build_apk.sh ./MyGame/build/android/libmain.so MyGame
+   # Installs or produces out/apk/MyGame.apk
+   ```
+
+### Building via GitHub Actions (Cloud)
+Push commits to this repository or trigger the `Build ReXGlue Android SDK & POCO X7 Pro` workflow under GitHub Actions to automatically compile and release pre-built APKs and SDK archives using GitHub's servers.
 
 ## Quickstart
 

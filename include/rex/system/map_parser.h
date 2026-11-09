@@ -11,6 +11,10 @@
 
 #pragma once
 
+#if defined(__clang__) && (!defined(__cpp_concepts) || __cpp_concepts < 202002L)
+#define __cpp_concepts 202002L
+#endif
+
 #include <cstdint>
 #include <expected>
 #include <filesystem>

@@ -39,12 +39,15 @@ uint64_t BitStream::Peek(size_t num_bits) {
   assert_false(num_bits > 57);
   assert_false(offset_bits_ + num_bits > size_bits_);
 
+  if (!buffer_ || num_bits == 0) return 0;
+
   size_t offset_bytes = offset_bits_ >> 3;
   size_t rel_offset_bits = offset_bits_ - (offset_bytes << 3);
 
   // offset -->
   // ..[junk]..| target bits |....[junk].............
-  uint64_t bits = *(uint64_t*)(buffer_ + offset_bytes);
+  uint64_t bits = 0;
+  std::memcpy(&bits, buffer_ + offset_bytes, sizeof(uint64_t));
 
   // We need the data in little endian.
   // TODO: Have a flag specifying endianness of data?
@@ -73,6 +76,8 @@ bool BitStream::Write(uint64_t val, size_t num_bits) {
   assert_false(num_bits > 57);
   assert_false(offset_bits_ + num_bits >= size_bits_);
 
+  if (!buffer_ || num_bits == 0) return false;
+
   size_t offset_bytes = offset_bits_ >> 3;
   size_t rel_offset_bits = offset_bits_ - (offset_bytes << 3);
 
@@ -86,7 +91,8 @@ bool BitStream::Write(uint64_t val, size_t num_bits) {
 
   // offset ----->
   // ....[junk]...| target bits w/ junk |....[junk]......
-  uint64_t bits = *(uint64_t*)(buffer_ + offset_bytes);
+  uint64_t bits = 0;
+  std::memcpy(&bits, buffer_ + offset_bytes, sizeof(uint64_t));
 
   // AND with mask
   // ....[junk]...| target bits (0) |........[junk]......
@@ -97,7 +103,7 @@ bool BitStream::Write(uint64_t val, size_t num_bits) {
   bits |= val;
 
   // Store into the bitstream.
-  *(uint64_t*)(buffer_ + offset_bytes) = bits;
+  std::memcpy(buffer_ + offset_bytes, &bits, sizeof(uint64_t));
 
   // Advance the bitstream forward.
   Advance(num_bits);
@@ -106,6 +112,7 @@ bool BitStream::Write(uint64_t val, size_t num_bits) {
 }
 
 size_t BitStream::Copy(uint8_t* dest_buffer, size_t num_bits) {
+  if (!dest_buffer || !buffer_ || num_bits == 0) return 0;
   size_t offset_bytes = offset_bits_ >> 3;
   size_t rel_offset_bits = offset_bits_ - (offset_bytes << 3);
   size_t bits_left = num_bits;

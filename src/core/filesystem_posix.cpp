@@ -303,4 +303,21 @@ std::vector<FileInfo> ListFiles(const std::filesystem::path& path) {
 }
 
 }  // namespace filesystem
+#if REX_PLATFORM_ANDROID
+namespace filesystem {
+// Game data lives on app-specific storage as plain files; content:// URIs (Storage Access
+// Framework) would need JNI and are not used by the port.
+void AndroidInitialize() {}
+void AndroidShutdown() {}
+bool IsAndroidContentUri(const std::string_view source) {
+  return source.starts_with("content://");
+}
+int OpenAndroidContentFileDescriptor(const std::string_view uri, const char* mode) {
+  (void)uri;
+  (void)mode;
+  return -1;
+}
+}  // namespace filesystem
+#endif  // REX_PLATFORM_ANDROID
+
 }  // namespace rex

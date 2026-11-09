@@ -57,7 +57,13 @@ struct Fiber {
   void* handle_ = nullptr;
   bool is_thread_fiber_ = false;
 #elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
+#if REX_PLATFORM_ANDROID
+  // Bionic has no getcontext/makecontext/swapcontext: fiber_posix.cpp switches stacks itself and
+  // keeps the callee-saved registers on the suspended fiber's stack.
+  void* sp_ = nullptr;
+#else
   ucontext_t context_{};
+#endif
   std::vector<uint8_t> stack_;
   void (*entry_)(void*) = nullptr;
   void* arg_ = nullptr;

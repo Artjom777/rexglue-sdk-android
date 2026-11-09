@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstdarg>
 #include <cstring>
+#include <filesystem>
 #include <sstream>
 #include <utility>
 
@@ -32,6 +33,19 @@
 #include <rex/ui/d3d12/d3d12_presenter.h>
 #include <rex/ui/d3d12/d3d12_util.h>
 
+// A title-side renderer draws the frames: the command processor still executes the PM4 stream
+// (registers, fences, interrupts, swaps) but issues no host draws, resolves or presents, and
+// occlusion queries take the base class's fake-sample path. (Same flag as the Vulkan backend;
+// the two backends are never compiled into one plugin here.)
+// gtav native-renderer bring-up (same as the Vulkan backend): every resolve of the chosen frame is
+// written to logs/emu_dump/frame_N/<seq>_<address>.bin (needs d3d12_readback_resolve=full) plus the
+// draw constants of emu_draw_dump_window frames. -1 = the next frame (set by the game on F9).
+REXCVAR_DEFINE_INT32(emu_resolve_dump_frame, 0, "GPU",
+                     "Dump every resolve of this frame to logs/emu_dump (-1 = next frame)");
+REXCVAR_DEFINE_INT32(emu_draw_dump_window, 1, "GPU",
+                     "Number of frames (from emu_resolve_dump_frame) whose draw constants are dumped");
+REXCVAR_DEFINE_BOOL(gpu_skip_rendering, false, "GPU",
+                    "Execute PM4 without rendering (a title-side renderer draws the frames)");
 REXCVAR_DEFINE_BOOL(d3d12_bindless, true, "GPU/D3D12", "Use bindless resources where available")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
@@ -46,6 +60,18 @@ REXCVAR_DEFINE_BOOL(d3d12_readback_resolve, false, "GPU/D3D12",
 REXCVAR_DEFINE_BOOL(d3d12_submit_on_primary_buffer_end, true, "GPU/D3D12",
                     "Submit command list when PM4 primary buffer ends")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// gtav native renderer: with gpu_skip_rendering the title's renderer replays frames some time
+// after this command processor executed them, yet fences written after a swap tell the game the
+// GPU is done with that frame's memory (it then streams new textures and vertex data into it).
+// When the title executable exports rex_skip_rendering_swap, this plugin calls it on the command
+// processor thread at every swap (0-based, in PM4 order); it blocks until the title's renderer
+// has read the frame's guest memory.
+using SkipRenderingSwapHook = void (*)(uint64_t swap_index);
+static SkipRenderingSwapHook ResolveSkipRenderingSwapHook() {
+  return reinterpret_cast<SkipRenderingSwapHook>(
+      GetProcAddress(GetModuleHandleW(nullptr), "rex_skip_rendering_swap"));
+}
 
 namespace rex::graphics::d3d12 {
 
@@ -152,7 +178,8 @@ void D3D12CommandProcessor::InitializeShaderStorage(const std::filesystem::path&
 
 bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
                                                                uint32_t packet, uint32_t count) {
-  if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_) {
+  if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_ ||
+      REXCVAR_GET(gpu_skip_rendering)) {
     return CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(reader, packet, count);
   }
 
@@ -1897,7 +1924,13 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
   vertex_buffers_in_sync_[0] = 0;
   vertex_buffers_in_sync_[1] = 0;
 
-  if (!graphics_system_)
+  if (REXCVAR_GET(gpu_skip_rendering)) {
+    static uint64_t skip_swaps = 0;
+    static const SkipRenderingSwapHook hook = ResolveSkipRenderingSwapHook();
+    if (hook) hook(skip_swaps);
+    skip_swaps++;
+  }
+  if (!graphics_system_ || REXCVAR_GET(gpu_skip_rendering))
     return;
   ui::Presenter* presenter = graphics_system_->presenter();
   if (!presenter) {
@@ -2275,6 +2308,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
+  if (REXCVAR_GET(gpu_skip_rendering)) {
+    return true;
+  }
+  DumpDrawConstantsForComparison(uint32_t(primitive_type), index_count);
   ID3D12Device* device = GetD3D12Provider().GetDevice();
   const RegisterFile& regs = *register_file_;
 
@@ -2870,10 +2907,72 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
   return true;
 }
 
+bool D3D12CommandProcessor::EmuDumpActive() {
+  int32_t frame = REXCVAR_GET(emu_resolve_dump_frame);
+  if (frame < 0) {
+    REXCVAR_SET(emu_resolve_dump_frame, 0);
+    emu_dump_target_ = frame_current_ + 1;
+  } else if (frame > 0) {
+    emu_dump_target_ = uint64_t(frame);
+  }
+  uint64_t window = uint64_t(std::max(1, REXCVAR_GET(emu_draw_dump_window)));
+  return emu_dump_target_ && frame_current_ >= emu_dump_target_ && frame_current_ < emu_dump_target_ + window;
+}
+
+void D3D12CommandProcessor::DumpResolveForComparison(uint32_t address, uint32_t length,
+                                                     const uint8_t* data) {
+  if (!EmuDumpActive()) return;
+  if (emu_dump_frame_ != frame_current_) {
+    emu_dump_frame_ = frame_current_;
+    emu_dump_sequence_ = 0;
+  }
+  std::filesystem::path dir = std::filesystem::path("logs/emu_dump") / fmt::format("frame_{}", frame_current_);
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  auto path = dir / fmt::format("{:03}_{:08X}.bin", emu_dump_sequence_++, address);
+  if (FILE* f = std::fopen(path.string().c_str(), "wb")) {
+    std::fwrite(data, 1, length, f);
+    std::fclose(f);
+  }
+}
+
+void D3D12CommandProcessor::FlushDrawConstantsForComparison() {
+  if (emu_draw_constants_.empty()) return;
+  std::filesystem::path dir =
+      std::filesystem::path("logs/emu_dump") / fmt::format("frame_{}", emu_draw_constants_frame_);
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  if (FILE* f = std::fopen((dir / "draws.bin").string().c_str(), "ab")) {
+    std::fwrite(emu_draw_constants_.data(), 1, emu_draw_constants_.size(), f);
+    std::fclose(f);
+  }
+  emu_draw_constants_.clear();
+}
+
+void D3D12CommandProcessor::DumpDrawConstantsForComparison(uint32_t prim, uint32_t count) {
+  bool active = EmuDumpActive();
+  if (!emu_draw_constants_.empty() && (!active || emu_draw_constants_frame_ != frame_current_))
+    FlushDrawConstantsForComparison();
+  if (!active) return;
+  emu_draw_constants_frame_ = frame_current_;
+  auto* ps = active_pixel_shader();
+  uint64_t hash = ps ? ps->ucode_data_hash() : 0;
+  uint32_t header[4] = {prim, count, uint32_t(hash), uint32_t(hash >> 32)};
+  auto append = [&](const void* p, size_t n) {
+    auto* b = static_cast<const uint8_t*>(p);
+    emu_draw_constants_.insert(emu_draw_constants_.end(), b, b + n);
+  };
+  append(header, sizeof(header));
+  append(&register_file_->values[XE_GPU_REG_SHADER_CONSTANT_000_X], 4 * 2048);
+}
+
 bool D3D12CommandProcessor::IssueCopy() {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+  if (REXCVAR_GET(gpu_skip_rendering)) {
+    return true;
+  }
   if (!BeginSubmission(true)) {
     return false;
   }
@@ -3095,6 +3194,7 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
     uint8_t* destination = memory_->TranslatePhysical(written_address);
     if (destination) {
       std::memcpy(destination, static_cast<uint8_t*>(rb.mapped_data[read_index]), written_length);
+      DumpResolveForComparison(written_address, written_length, destination);
     }
   }
 

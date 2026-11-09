@@ -366,6 +366,17 @@ class D3D12CommandProcessor : public CommandProcessor {
   bool UpdateBindings(const D3D12Shader* vertex_shader, const D3D12Shader* pixel_shader,
                       ID3D12RootSignature* root_signature, bool shared_memory_is_uav);
   bool IssueCopy_ReadbackResolvePath();
+  // gtav native-renderer comparison dumps (see the cvars in command_processor.cpp).
+  bool EmuDumpActive();
+  void DumpResolveForComparison(uint32_t address, uint32_t length, const uint8_t* data);
+  void DumpDrawConstantsForComparison(uint32_t prim, uint32_t count);
+  uint64_t emu_dump_target_ = 0, emu_dump_frame_ = 0;
+  uint32_t emu_dump_sequence_ = 0;
+  // Draw constants of the frame being dumped, written to its draws.bin once the frame is over
+  // (one file open per draw on a slow disk made every dumped frame take minutes).
+  void FlushDrawConstantsForComparison();
+  std::vector<uint8_t> emu_draw_constants_;
+  uint64_t emu_draw_constants_frame_ = 0;
   bool IssueDraw_MemexportReadbackFullPath(uint32_t total_size);
   bool IssueDraw_MemexportReadbackFastPath(uint32_t total_size);
 

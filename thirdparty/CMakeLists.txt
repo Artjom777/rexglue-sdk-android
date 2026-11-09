@@ -49,7 +49,7 @@ if(REXGLUE_USE_VULKAN)
         vulkan-headers vulkan-memory-allocator
         spirv-headers spirv-tools glslang
     )
-    if(APPLE)
+    if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
         list(APPEND REQUIRED_SUBMODULES vulkan-loader moltenvk)
     endif()
 endif()
@@ -201,7 +201,9 @@ if(REXGLUE_USE_VULKAN)
     set(VMA_ENABLE_INSTALL ON CACHE BOOL "" FORCE)
     add_subdirectory(vulkan-memory-allocator)
 
-    if(APPLE)
+    # iOS: no Vulkan loader; the app embeds a prebuilt MoltenVK (ios-arm64) and the runtime
+    # opens it from the app bundle.
+    if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
         # Build the loader and MoltenVK revisions shipped by the pinned SDK.
         # They remain runtime-loaded; no Vulkan implementation is linked into
         # rexglue itself.
@@ -234,8 +236,12 @@ add_library(imgui OBJECT
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgui_rex_context.cpp
 )
 add_library(imgui::imgui ALIAS imgui)
+# Per-thread current context (imgui_rex_config.h).
+target_compile_definitions(imgui PRIVATE
+    IMGUI_USER_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/imgui_rex_config.h")
 target_include_directories(imgui PUBLIC
     $<BUILD_INTERFACE:${IMGUI_DIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
@@ -290,7 +296,7 @@ set(SDL_DUMMYVIDEO OFF CACHE BOOL "" FORCE)
 
 # Linux video and audio backends. Both video drivers are always built so the
 # one in use stays a runtime choice.
-if(UNIX AND NOT APPLE)
+if(UNIX AND NOT APPLE AND NOT ANDROID)
     set(SDL_X11               ON  CACHE BOOL "" FORCE)
     set(SDL_WAYLAND           ON  CACHE BOOL "" FORCE)
     set(SDL_ALSA              ON  CACHE BOOL "" FORCE)

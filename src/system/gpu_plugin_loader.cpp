@@ -22,6 +22,10 @@
 #include <rex/platform.h>
 #include <rex/platform/dynlib.h>
 
+#if REX_PLATFORM_ANDROID
+#include <dlfcn.h>
+#endif
+
 namespace rex::system {
 
 namespace {
@@ -56,6 +60,15 @@ std::vector<platform::DynamicLibrary>& LoadedPlugins() {
 
 std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::string_view backend) {
   auto path = rex::filesystem::GetExecutableFolder() / PluginFileName(name);
+#if REX_PLATFORM_ANDROID
+  // The executable is app_process; plugins sit next to librexruntime.so in the app's lib dir.
+  {
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<void*>(&LoadGpuPlugin), &info) && info.dli_fname) {
+      path = std::filesystem::path(info.dli_fname).parent_path() / PluginFileName(name);
+    }
+  }
+#endif
   if (!std::filesystem::exists(path)) {
     REXSYS_ERROR(
         "GPU plugin '{}' not found at {}. Stage it next to the executable "

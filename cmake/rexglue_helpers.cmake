@@ -166,7 +166,7 @@ function(rexglue_configure_target target_name)
         unset(_plugin_target)
     endforeach()
 
-    if(APPLE AND REXGLUE_USE_VULKAN)
+    if(APPLE AND REXGLUE_USE_VULKAN AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
         _rexglue_stage_macos_vulkan_runtime(${target_name})
     endif()
 endfunction()

@@ -159,3 +159,43 @@ Shader::Translation* Shader::CreateTranslationInstance(uint64_t modification) {
 }
 
 }  // namespace rex::graphics
+
+// Title-side renderers (gpu_skip_rendering) upload a shader's float constants themselves: how many
+// of the 256 registers of its bank (c0 up to the highest one it reads) the shader can read, from
+// the same ucode analysis that packs constants for the emulator's renderers. 256 when the shader
+// indexes constants dynamically. ucode_dwords is the raw (big-endian) microcode.
+#if defined(_WIN32)
+#define REX_SHADER_EXPORT __declspec(dllexport)
+#else
+#define REX_SHADER_EXPORT __attribute__((visibility("default")))
+#endif
+extern "C" REX_SHADER_EXPORT uint32_t rex_shader_float_constant_count(bool pixel, const uint32_t* ucode_dwords,
+                                                                       uint32_t dword_count) {
+  using namespace rex::graphics;
+  if (!ucode_dwords || !dword_count) return 256;
+  Shader shader(pixel ? xenos::ShaderType::kPixel : xenos::ShaderType::kVertex, 0, ucode_dwords, dword_count);
+  rex::string::StringBuffer disasm;
+  shader.AnalyzeUcode(disasm);
+  const auto& map = shader.constant_register_map();
+  if (map.float_dynamic_addressing) return 256;
+  for (int word = 3; word >= 0; --word)
+    if (map.float_bitmap[word]) return uint32_t(word * 64 + 64 - __builtin_clzll(map.float_bitmap[word]));
+  return 0;
+}
+
+// The same analysis as a bitmap of the float constant registers the shader reads (bit i of
+// out[i / 64] = register i of its bank). Returns false (all bits set) when it indexes them
+// dynamically.
+extern "C" REX_SHADER_EXPORT bool rex_shader_float_constant_bitmap(bool pixel, const uint32_t* ucode_dwords,
+                                                                    uint32_t dword_count, uint64_t out[4]) {
+  using namespace rex::graphics;
+  for (int i = 0; i < 4; ++i) out[i] = UINT64_MAX;
+  if (!ucode_dwords || !dword_count) return false;
+  Shader shader(pixel ? xenos::ShaderType::kPixel : xenos::ShaderType::kVertex, 0, ucode_dwords, dword_count);
+  rex::string::StringBuffer disasm;
+  shader.AnalyzeUcode(disasm);
+  const auto& map = shader.constant_register_map();
+  if (map.float_dynamic_addressing) return false;
+  for (int i = 0; i < 4; ++i) out[i] = map.float_bitmap[i];
+  return true;
+}

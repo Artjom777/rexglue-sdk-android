@@ -42,6 +42,9 @@ void RingBuffer::AdvanceWrite(size_t count) {
 }
 
 RingBuffer::ReadRange RingBuffer::BeginRead(size_t count) {
+  if (!buffer_ || !capacity_) {
+    return {nullptr, nullptr, 0, 0};
+  }
   ring_size_t cnt = static_cast<ring_size_t>(std::min(count, static_cast<size_t>(capacity_)));
   if (!cnt) {
     return {nullptr, nullptr, 0, 0};
@@ -64,6 +67,12 @@ void RingBuffer::EndRead(ReadRange read_range) {
 }
 
 size_t RingBuffer::Read(uint8_t* buffer, size_t count) {
+  if (!buffer_ || !capacity_ || !buffer || !count) {
+    return 0;
+  }
+  if (read_offset_ >= capacity_) {
+    read_offset_ %= capacity_;
+  }
   count = std::min(count, static_cast<size_t>(capacity_));
   if (!count) {
     return 0;
@@ -94,6 +103,12 @@ size_t RingBuffer::Read(uint8_t* buffer, size_t count) {
 }
 
 size_t RingBuffer::Write(const uint8_t* buffer, size_t count) {
+  if (!buffer_ || !capacity_ || !buffer || !count) {
+    return 0;
+  }
+  if (write_offset_ >= capacity_) {
+    write_offset_ %= capacity_;
+  }
   count = std::min(count, static_cast<size_t>(capacity_));
   if (!count) {
     return 0;

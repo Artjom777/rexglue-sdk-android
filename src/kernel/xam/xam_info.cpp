@@ -20,6 +20,7 @@
 #include <rex/system/xenumerator.h>
 #include <rex/system/xthread.h>
 #include <rex/system/xtypes.h>
+#include <rex/kernel/xboxkrnl/threading.h>
 
 #if REX_PLATFORM_WIN32
 #include <windows.h>
@@ -322,10 +323,15 @@ u32 XamLoaderGetDvdTrayState_entry(mapped_u32 out_state) {
   return X_STATUS_SUCCESS;
 }
 
-u32 XamSwapDisc_entry(u32 disc_number) {
-  // Stub for multi-disc games. Single-disc games (like Blue Dragon's reblue test)
-  // don't need this, but the game may look it up dynamically via XexGetProcedureAddress.
-  REXKRNL_DEBUG("XamSwapDisc({}) - stub, returning success", (uint32_t)disc_number);
+u32 XamSwapDisc_entry(u32 disc_number, ppc_ptr_t<X_KEVENT> completion_event,
+                      mapped_void error_string) {
+  // Multi-disc games wait on completion_event after asking for the next disc. The
+  // host mounts the requested disc's files as game: up front, so report the swap
+  // as done immediately.
+  REXKRNL_DEBUG("XamSwapDisc({}) - completing immediately", (uint32_t)disc_number);
+  if (completion_event) {
+    xboxkrnl::xeKeSetEvent(completion_event, 1, 0);
+  }
   return X_STATUS_SUCCESS;
 }
 

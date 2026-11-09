@@ -1,0 +1,148 @@
+name: Build ReXGlue Android SDK & POCO X7 Pro
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      build_poco:
+        description: 'Build POCO X7 Pro / MediaTek optimized SDK and CLI'
+        required: false
+        type: boolean
+        default: true
+      build_standard:
+        description: 'Build standard Android arm64-v8a SDK and CLI'
+        required: false
+        type: boolean
+        default: true
+      create_release:
+        description: 'Create GitHub Release with binaries'
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    name: Build Android SDK & Codegen CLI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK & NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-34 build-tools;34.0.0 ndk;27.1.12297006"
+
+      - name: Install Host Dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ninja-build cmake clang lld python3 zip unzip pkg-config
+
+      - name: Configure Android Environment
+        run: |
+          SDK_DIR=${ANDROID_HOME:-${ANDROID_SDK_ROOT}}
+          echo "ANDROID_HOME=${SDK_DIR}" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=${SDK_DIR}" >> $GITHUB_ENV
+
+          SDKMANAGER_PATH=$(find "$SDK_DIR/cmdline-tools" -name sdkmanager 2>/dev/null | head -n 1)
+          if [ -n "$SDKMANAGER_PATH" ]; then
+            SDKMANAGER_DIR=$(dirname "$SDKMANAGER_PATH")
+            echo "$SDKMANAGER_DIR" >> $GITHUB_PATH
+          fi
+
+          ANDROID_NDK_HOME=$(find ${SDK_DIR}/ndk -maxdepth 1 -mindepth 1 2>/dev/null | sort -V | tail -n 1)
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME}" >> $GITHUB_ENV
+          echo "NDK_HOME=${ANDROID_NDK_HOME}" >> $GITHUB_ENV
+
+          mkdir -p ~/android-tools
+          cat << EOF > ~/android-tools/env.sh
+          export ANDROID_HOME=${SDK_DIR}
+          export ANDROID_NDK_HOME=${ANDROID_NDK_HOME}
+          export NDK_HOME=${ANDROID_NDK_HOME}
+          export PATH=${SDK_DIR}/platform-tools:\$PATH
+          EOF
+
+      - name: Apply Submodule Patches
+        run: |
+          echo "==> Applying thirdparty Android patches if submodules checked out..."
+          if [ -d "thirdparty/sdl3" ] && [ -f "tools/android/patches/sdl3-android.patch" ]; then
+            git -C thirdparty/sdl3 apply "$GITHUB_WORKSPACE/tools/android/patches/sdl3-android.patch" 2>/dev/null || true
+          fi
+          if [ -d "thirdparty/FFmpeg" ] && [ -f "tools/android/patches/ffmpeg-android.patch" ]; then
+            git -C thirdparty/FFmpeg apply "$GITHUB_WORKSPACE/tools/android/patches/ffmpeg-android.patch" 2>/dev/null || true
+          fi
+
+      - name: Build POCO X7 Pro Optimized SDK & Codegen CLI (MediaTek / ARMv9 / Mali-G720)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_poco }}
+        run: |
+          echo "=== Building POCO X7 Pro Optimized SDK and rexglue CLI ==="
+          CLANG=$(find "$ANDROID_NDK_HOME" -name "aarch64-linux-android*-clang" | head -n 1)
+          POCO_MARCH="armv8.2-a+lse+rcpc+dotprod"
+          if "$CLANG" -march=armv9.2-a -E -x c /dev/null -o /dev/null 2>/dev/null; then
+            POCO_MARCH="armv9.2-a"
+          elif "$CLANG" -march=armv9-a -E -x c /dev/null -o /dev/null 2>/dev/null; then
+            POCO_MARCH="armv9-a"
+          fi
+          echo "POCO_MARCH: $POCO_MARCH"
+
+          POCO=1 MARCH="$POCO_MARCH" ./tools/android/build_sdk.sh all
+
+      - name: Build Standard Android ARM64 SDK & Codegen CLI (arm64-v8a)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_standard }}
+        run: |
+          echo "=== Building Standard Android ARM64 SDK and rexglue CLI ==="
+          POCO=0 ./tools/android/build_sdk.sh all
+
+      - name: Upload POCO X7 Pro Artifacts
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_poco }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: rexglue-sdk-poco-x7-pro
+          path: |
+            out/dist/rexglue-sdk-poco-x7-pro.zip
+            out/dist/rexglue-sdk-poco-x7-pro-cli-only.zip
+          retention-days: 14
+
+      - name: Upload Standard Android ARM64 Artifacts
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_standard }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: rexglue-sdk-android-arm64
+          path: |
+            out/dist/rexglue-sdk-android-arm64.zip
+            out/dist/rexglue-sdk-android-arm64-cli-only.zip
+          retention-days: 14
+
+      - name: Upload GitHub Release Assets
+        if: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release)) }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/dist/*.zip
+            out/dist/*.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

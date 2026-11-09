@@ -176,7 +176,10 @@ class XexModule : public Module {
       return false;
     }
     uint8_t* buffer = memory()->TranslateVirtual(base_address_);
-    return *(uint32_t*)buffer == 0x905A4D;
+    if (!buffer) return false;
+    uint32_t magic = 0;
+    std::memcpy(&magic, buffer, sizeof(uint32_t));
+    return magic == 0x905A4D;
   }
 
   bool is_patch() const {

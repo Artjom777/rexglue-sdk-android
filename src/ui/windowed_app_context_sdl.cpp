@@ -9,6 +9,9 @@
  *              See LICENSE file in the project root for full license text.
  */
 
+#include <map>
+#include <string>
+#include <fmt/format.h>
 #include <rex/ui/windowed_app_context_sdl.h>
 
 #include <cstdlib>
@@ -41,7 +44,11 @@ bool SDLWindowedAppContext::Initialize() {
   // Picked before SDL_InitSubSystem, long before a graphics instance can say
   // which surface extensions it has, so the cvar is the escape hatch.
   std::string requested_driver = REXCVAR_GET(video_driver);
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_IOS
+  if (requested_driver.empty()) {
+    requested_driver = "uikit";
+  }
+#elif REX_PLATFORM_MAC
   // macOS presents via a CAMetalLayer surface obtained from the Cocoa driver.
   if (requested_driver.empty()) {
     requested_driver = "cocoa";
@@ -91,6 +98,21 @@ int SDLWindowedAppContext::RunMainMessageLoop() {
       REXLOG_ERROR("SDL_WaitEvent failed: {}", SDL_GetError());
       return EXIT_FAILURE;
     }
+#if REX_PLATFORM_ANDROID
+    // Diagnostics: which events keep the UI thread awake (logged every 5 s).
+    {
+      static std::map<uint32_t, uint32_t> counts;
+      static uint64_t since = SDL_GetTicks();
+      counts[event.type]++;
+      if (SDL_GetTicks() - since > 5000) {
+        std::string line;
+        for (auto& [type, n] : counts) line += fmt::format(" {:X}:{}", type, n);
+        REXLOG_INFO("UI thread events in 5 s:{}", line);
+        counts.clear();
+        since = SDL_GetTicks();
+      }
+    }
+#endif
     ProcessEvent(event);
   }
   return EXIT_SUCCESS;

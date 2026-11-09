@@ -10,6 +10,7 @@
  */
 
 #include <algorithm>
+#include <filesystem>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -20,6 +21,10 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+
+#ifndef _WIN32
+#include <dlfcn.h>
+#endif
 
 #include <SPIRV/GlslangToSpv.h>
 #include <glslang/Public/ShaderLang.h>
@@ -47,6 +52,30 @@
 #include <rex/ui/vulkan/util.h>
 
 // Legacy backend compatibility aliases for shared readback controls.
+REXCVAR_DEFINE_INT32(emu_resolve_dump_frame, 0, "GPU/Vulkan",
+                     "Write every resolve of this frame to logs/emu_dump (needs readback_resolve=full)");
+REXCVAR_DEFINE_INT32(emu_draw_dump_window, 1, "GPU/Vulkan",
+                     "Number of frames (from emu_resolve_dump_frame) whose draw constants are dumped");
+// A title-side renderer draws the frames: the command processor still executes the PM4 stream
+// (registers, fences, interrupts, swaps) but issues no host draws, resolves or presents.
+REXCVAR_DEFINE_BOOL(gpu_skip_rendering, false, "GPU/Vulkan",
+                    "Execute PM4 without rendering (a title-side renderer draws the frames)");
+// gtav native renderer: with gpu_skip_rendering the title's renderer replays frames some time
+// after this command processor executed them, yet fences written after a swap tell the game the
+// GPU is done with that frame's memory (it then streams new textures and vertex data into it).
+// When the title executable exports rex_skip_rendering_swap, this plugin calls it on the command
+// processor thread at every swap (0-based, in PM4 order); it blocks until the title's renderer
+// has read the frame's guest memory. (Same hook as the D3D12 backend.)
+using SkipRenderingSwapHook = void (*)(uint64_t swap_index);
+static SkipRenderingSwapHook ResolveSkipRenderingSwapHook() {
+#ifdef _WIN32
+  return reinterpret_cast<SkipRenderingSwapHook>(
+      GetProcAddress(GetModuleHandleW(nullptr), "rex_skip_rendering_swap"));
+#else
+  return reinterpret_cast<SkipRenderingSwapHook>(dlsym(RTLD_DEFAULT, "rex_skip_rendering_swap"));
+#endif
+}
+
 REXCVAR_DEFINE_BOOL(vulkan_readback_resolve, false, "GPU/Vulkan",
                     "Read render-to-texture results on the CPU")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -924,16 +953,24 @@ bool VulkanCommandProcessor::SetupContext() {
         "titles correctly");
   }
   if (!device_properties.fragmentStoresAndAtomics) {
-    REXGPU_ERROR(
-        "Vulkan fragmentStoresAndAtomics is required for GPU emulation and "
-        "D3D12 parity, but unsupported by the selected device");
-    return false;
+    if (REXCVAR_GET(vulkan_require_fragment_stores_and_atomics)) {
+      REXGPU_ERROR(
+          "Vulkan fragmentStoresAndAtomics is required for GPU emulation and "
+          "D3D12 parity, but unsupported by the selected device");
+      return false;
+    }
+    REXGPU_WARN("Vulkan fragmentStoresAndAtomics is not supported by the device");
   }
   if (!device_properties.vertexPipelineStoresAndAtomics) {
-    REXGPU_ERROR(
-        "Vulkan vertexPipelineStoresAndAtomics is required for GPU emulation and "
-        "D3D12 parity, but unsupported by the selected device");
-    return false;
+    if (REXCVAR_GET(vulkan_require_vertex_pipeline_stores_and_atomics)) {
+      REXGPU_ERROR(
+          "Vulkan vertexPipelineStoresAndAtomics is required for GPU emulation and "
+          "D3D12 parity, but unsupported by the selected device");
+      return false;
+    }
+    REXGPU_WARN(
+        "Vulkan vertexPipelineStoresAndAtomics is not supported by the device; "
+        "vertex pipeline stores will fall back to compute");
   }
   if (!device_properties.geometryShader) {
     if (REXCVAR_GET(vulkan_require_geometry_shader)) {
@@ -1066,6 +1103,10 @@ bool VulkanCommandProcessor::SetupContext() {
     shared_memory_descriptor_buffer_info.buffer = shared_memory_->buffer();
     shared_memory_descriptor_buffer_info.offset = shared_memory_binding_range * i;
     shared_memory_descriptor_buffer_info.range = shared_memory_binding_range;
+    if (REXCVAR_GET(gpu_skip_rendering)) {  // the token buffer (VulkanSharedMemory::Initialize)
+      shared_memory_descriptor_buffer_info.offset = 0;
+      shared_memory_descriptor_buffer_info.range = VK_WHOLE_SIZE;
+    }
   }
   VkWriteDescriptorSet write_descriptor_sets[2];
   VkWriteDescriptorSet& write_descriptor_set_shared_memory = write_descriptor_sets[0];
@@ -2275,7 +2316,13 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
   vertex_buffers_in_sync_[0] = 0;
   vertex_buffers_in_sync_[1] = 0;
 
-  if (!graphics_system_)
+  if (REXCVAR_GET(gpu_skip_rendering)) {
+    static uint64_t skip_swaps = 0;
+    static const SkipRenderingSwapHook hook = ResolveSkipRenderingSwapHook();
+    if (hook) hook(skip_swaps);
+    skip_swaps++;
+  }
+  if (!graphics_system_ || REXCVAR_GET(gpu_skip_rendering))
     return;
   ui::Presenter* presenter = graphics_system_->presenter();
   if (!presenter) {
@@ -3594,8 +3641,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
+  if (REXCVAR_GET(gpu_skip_rendering)) {
+    return true;
+  }
   const RegisterFile& regs = *register_file_;
   (void)index_buffer_info;
+  DumpDrawConstantsForComparison(uint32_t(prim_type), index_count);
   auto draw_fail = [&](const char* stage) {
     auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
     REXGPU_ERROR(
@@ -4385,6 +4436,9 @@ bool VulkanCommandProcessor::IssueCopy() {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+  if (REXCVAR_GET(gpu_skip_rendering)) {
+    return true;
+  }
 
   if (!BeginSubmission(true)) {
     return false;
@@ -4398,6 +4452,64 @@ bool VulkanCommandProcessor::IssueCopy() {
   }
 
   return IssueCopy_ReadbackResolvePath();
+}
+
+// emu_resolve_dump_frame: N = dump frames N..N+window-1; -1 (set by the game on F9) = from the next
+// frame on (same as the D3D12 backend).
+bool VulkanCommandProcessor::EmuDumpActive() {
+  int32_t frame = REXCVAR_GET(emu_resolve_dump_frame);
+  if (frame < 0) {
+    REXCVAR_SET(emu_resolve_dump_frame, 0);
+    emu_dump_target_ = frame_current_ + 1;
+  } else if (frame > 0) {
+    emu_dump_target_ = uint64_t(frame);
+  }
+  uint64_t window = uint64_t(std::max(1, REXCVAR_GET(emu_draw_dump_window)));
+  return emu_dump_target_ && frame_current_ >= emu_dump_target_ && frame_current_ < emu_dump_target_ + window;
+}
+
+// gtav native-renderer bring-up: with --emu_resolve_dump_frame=N (and readback_resolve=full),
+// every resolve of frame N is written to logs/emu_dump/frame_N/<seq>_<address>.bin in order, the
+// ground truth the native renderer's frame dump is compared against.
+void VulkanCommandProcessor::DumpResolveForComparison(uint32_t address, uint32_t length,
+                                                      const uint8_t* data) {
+  if (!EmuDumpActive()) return;
+  if (emu_dump_frame_ != frame_current_) {
+    emu_dump_frame_ = frame_current_;
+    emu_dump_sequence_ = 0;
+  }
+  const char* home = std::getenv("HOME");
+  std::filesystem::path dir = std::filesystem::path(home ? home : ".") / "gtav-linux/logs/emu_dump" /
+                              fmt::format("frame_{}", frame_current_);
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  auto path = dir / fmt::format("{:03}_{:08X}.bin", emu_dump_sequence_++, address);
+  if (FILE* f = std::fopen(path.c_str(), "wb")) {
+    std::fwrite(data, 1, length, f);
+    std::fclose(f);
+  }
+}
+
+// Same frame as above: every draw's primitive type, index count and the 512 ALU float constants
+// (host-endian), appended to logs/emu_dump/frame_N/draws.bin as
+// {u32 prim, u32 count, u64 pixel shader ucode hash, u32[2048]}.
+void VulkanCommandProcessor::DumpDrawConstantsForComparison(uint32_t prim, uint32_t count) {
+  // Draw constants are dumped for emu_draw_dump_window frames starting at emu_resolve_dump_frame
+  // (frame numbers here and in the game differ by a run-dependent offset; the comparison tool
+  // picks the matching frame by content).
+  if (!EmuDumpActive()) return;
+  const char* home = std::getenv("HOME");
+  std::filesystem::path dir = std::filesystem::path(home ? home : ".") / "gtav-linux/logs/emu_dump" /
+                              fmt::format("frame_{}", frame_current_);
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  if (FILE* f = std::fopen((dir / "draws.bin").c_str(), "ab")) {
+    uint64_t ps = active_pixel_shader_ ? active_pixel_shader_->ucode_data_hash() : 0;
+    uint32_t header[4] = {prim, count, uint32_t(ps), uint32_t(ps >> 32)};
+    std::fwrite(header, 4, 4, f);
+    std::fwrite(&register_file_->values[XE_GPU_REG_SHADER_CONSTANT_000_X], 4, 2048, f);
+    std::fclose(f);
+  }
 }
 
 bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
@@ -4682,6 +4794,7 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
     uint8_t* destination = memory_->TranslatePhysical(written_address);
     if (destination) {
       std::memcpy(destination, readback.mapped_data[read_index], written_length);
+      DumpResolveForComparison(written_address, written_length, destination);
     }
   }
 

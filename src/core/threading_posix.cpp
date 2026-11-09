@@ -41,15 +41,18 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
 #include <rex/thread/timer_queue.h>
 
 #include <sched.h>
+#if defined(__APPLE__)
+#include <pthread/qos.h>
+#endif
+#include <string>
 
 #if REX_PLATFORM_ANDROID
-#include <dlfcn.h>
-
-#include <rex/main_android.h>
 #include <rex/string.h>
 #endif
 
 #if REX_PLATFORM_LINUX
+#include <linux/futex.h>
+#include <sys/syscall.h>
 // SIGEV_THREAD_ID in timer_create(...) is a Linux extension
 #define REX_HAS_SIGEV_THREAD_ID 1
 #ifdef __GLIBC__
@@ -65,30 +68,14 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
 namespace rex::thread {
 
 #if REX_PLATFORM_ANDROID
-// May be null if no dynamically loaded functions are required.
-static void* android_libc_;
-// API 26+.
-static int (*android_pthread_getname_np_)(pthread_t pthread, char* buf, size_t n);
+// The port targets API 30+, where Bionic has pthread_getname_np (API 26+), so the pre-26 name
+// fallback below is never taken.
+static int (*android_pthread_getname_np_)(pthread_t pthread, char* buf,
+                                          size_t n) = pthread_getname_np;
 
-void AndroidInitialize() {
-  if (rex::GetAndroidApiLevel() >= 26) {
-    android_libc_ = dlopen("libc.so", RTLD_NOW);
-    assert_not_null(android_libc_);
-    if (android_libc_) {
-      android_pthread_getname_np_ = reinterpret_cast<decltype(android_pthread_getname_np_)>(
-          dlsym(android_libc_, "pthread_getname_np"));
-      assert_not_null(android_pthread_getname_np_);
-    }
-  }
-}
+void AndroidInitialize() {}
 
-void AndroidShutdown() {
-  android_pthread_getname_np_ = nullptr;
-  if (android_libc_) {
-    dlclose(android_libc_);
-    android_libc_ = nullptr;
-  }
-}
+void AndroidShutdown() {}
 #endif
 
 template <typename _Rep, typename _Period>
@@ -267,10 +254,35 @@ static sem_t* RexCreateAnonymousSemaphore() {
 }
 #endif  // __APPLE__
 
+// Waits on several handles had no way to sleep until one of them changes, so they polled with
+// 1 ms sleeps: a guest thread waiting for any of a few events woke up to ~1 ms late, every time
+// (GTA V's game threads do this every frame). Every signal now bumps this word and wakes the
+// multi-waiters through a futex; they recheck at once. The 1 ms poll stays as the upper bound,
+// so a signal path that does not notify is never worse than before.
+#if REX_PLATFORM_LINUX
+static std::atomic<uint32_t> multi_wait_epoch_{0};
+static std::atomic<int32_t> multi_waiters_{0};
+static inline void NotifyAllMultiWaiters() {
+  multi_wait_epoch_.fetch_add(1, std::memory_order_seq_cst);
+  if (multi_waiters_.load(std::memory_order_seq_cst) > 0)
+    syscall(SYS_futex, &multi_wait_epoch_, FUTEX_WAKE_PRIVATE, INT32_MAX, nullptr, nullptr, 0);
+}
+#else
+static inline void NotifyAllMultiWaiters() {}
+#endif
+
 class PosixConditionBase {
  public:
+  // Threads inside WaitMultiple on this handle: a signal wakes the multi-waiters only then (one
+  // futex wake per signal of any handle was ~10,000 syscalls a second on GTA V's update thread).
+  std::atomic<int32_t> multi_waiters_here_{0};
+  void NotifyMultiWaiters() {
+    std::atomic_thread_fence(std::memory_order_seq_cst);  // the state change before the count
+    if (multi_waiters_here_.load(std::memory_order_seq_cst) > 0) NotifyAllMultiWaiters();
+  }
+
   PosixConditionBase() {
-#if REX_PLATFORM_LINUX
+#if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID  // Bionic: no robust mutexes
     // Use robust mutexes so waits can recover if owner thread terminates.
     pthread_mutexattr_t attr;
     if (pthread_mutexattr_init(&attr) == 0) {
@@ -290,7 +302,7 @@ class PosixConditionBase {
   WaitResult Wait(std::chrono::milliseconds timeout) {
     bool executed;
     auto predicate = [this] { return this->signaled(); };
-#if REX_PLATFORM_LINUX
+#if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID  // Bionic: no robust mutexes
     auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
     int lock_result = pthread_mutex_lock(native_mutex);
     if (lock_result == EOWNERDEAD) {
@@ -330,12 +342,28 @@ class PosixConditionBase {
       return std::make_pair(result, 0);
     }
 
+#if REX_PLATFORM_LINUX
+    // Registered before the handles are checked: a signal from then on bumps the epoch.
+    struct Registration {
+      std::vector<PosixConditionBase*>& handles;
+      explicit Registration(std::vector<PosixConditionBase*>& h) : handles(h) {
+        for (auto* handle : handles) handle->multi_waiters_here_.fetch_add(1, std::memory_order_seq_cst);
+      }
+      ~Registration() {
+        for (auto* handle : handles) handle->multi_waiters_here_.fetch_sub(1, std::memory_order_seq_cst);
+      }
+    } registration(handles);
+#endif
     auto start_time = std::chrono::steady_clock::now();
     auto end_time = (timeout == std::chrono::milliseconds::max())
                         ? std::chrono::steady_clock::time_point::max()
                         : start_time + timeout;
 
     while (true) {
+#if REX_PLATFORM_LINUX
+      // Read before the handles are checked: a signal after the check changes it.
+      uint32_t seen_epoch = multi_wait_epoch_.load(std::memory_order_seq_cst);
+#endif
       size_t first_signaled = std::numeric_limits<size_t>::max();
       bool condition_met = false;
       bool all_locked = true;
@@ -344,7 +372,7 @@ class PosixConditionBase {
       locks.reserve(handles.size());
 
       for (size_t i = 0; i < handles.size(); ++i) {
-#if REX_PLATFORM_LINUX
+#if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID  // Bionic: no robust mutexes
         auto native_mutex = static_cast<pthread_mutex_t*>(handles[i]->mutex_.native_handle());
         int result = pthread_mutex_trylock(native_mutex);
         if (result == 0 || result == EOWNERDEAD) {
@@ -411,6 +439,19 @@ class PosixConditionBase {
         return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
       }
 
+#if REX_PLATFORM_LINUX
+      {
+        auto remaining = end_time - now;
+        auto wait = timeout == std::chrono::milliseconds::max()
+                        ? std::chrono::nanoseconds(std::chrono::milliseconds(1))
+                        : std::min<std::chrono::nanoseconds>(remaining, std::chrono::milliseconds(1));
+        timespec ts{0, long(wait.count())};
+        multi_waiters_.fetch_add(1, std::memory_order_seq_cst);
+        if (multi_wait_epoch_.load(std::memory_order_seq_cst) == seen_epoch)
+          syscall(SYS_futex, &multi_wait_epoch_, FUTEX_WAIT_PRIVATE, seen_epoch, &ts, nullptr, 0);
+        multi_waiters_.fetch_sub(1, std::memory_order_seq_cst);
+      }
+#else
       if (timeout == std::chrono::milliseconds::max()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       } else {
@@ -418,6 +459,7 @@ class PosixConditionBase {
         auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
         std::this_thread::sleep_for(sleep_time);
       }
+#endif
     }
   }
 
@@ -450,6 +492,7 @@ class PosixCondition<Event> : public PosixConditionBase {
     auto lock = std::unique_lock<std::mutex>(mutex_);
     signal_ = true;
     cond_.notify_all();
+    NotifyMultiWaiters();
     return true;
   }
 
@@ -487,6 +530,7 @@ class PosixCondition<Semaphore> : public PosixConditionBase {
     }
     count_ += release_count;
     cond_.notify_all();
+    NotifyMultiWaiters();
     return true;
   }
 
@@ -519,6 +563,7 @@ class PosixCondition<Mutant> : public PosixConditionBase {
       // Free to be acquired by another thread
       if (count_ == 0) {
         cond_.notify_all();
+        NotifyMultiWaiters();
       }
       return true;
     }
@@ -551,6 +596,7 @@ class PosixCondition<Timer> : public PosixConditionBase {
     std::lock_guard<std::mutex> lock(mutex_);
     signal_ = true;
     cond_.notify_all();
+    NotifyMultiWaiters();
     return true;
   }
 
@@ -979,6 +1025,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
       exit_code_ = exit_code;
       signaled_ = true;
       cond_.notify_all();
+      NotifyMultiWaiters();
     }
     if (is_current_thread) {
       pthread_exit(reinterpret_cast<void*>(exit_code));
@@ -1405,6 +1452,30 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
   }
 #endif
   set_current_thread_name("");
+#if defined(__APPLE__)
+  // Without a QoS class the scheduler may run guest threads on the efficiency cores (a process
+  // started from a shell in the background has no app to inherit one from). REX_THREAD_QOS=0: off.
+  {
+    static const bool qos = !getenv("REX_THREAD_QOS") || std::string(getenv("REX_THREAD_QOS")) != "0";
+    if (qos) pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+  }
+#endif
+#if REX_PLATFORM_ANDROID
+  // Same problem on phones (big.LITTLE): the scheduler kept the title's threads on the little
+  // cores, about 3x slower for recompiled code. Keep them on the upper half of the CPU numbers
+  // (the mid and prime clusters). Opt in with REX_THREAD_BIG_CORES=1: with ~20 title threads on
+  // four cores the renderer competed for them (not yet measured on a cool phone).
+  {
+    static const bool big = getenv("REX_THREAD_BIG_CORES") && std::string(getenv("REX_THREAD_BIG_CORES")) == "1";
+    int n = int(sysconf(_SC_NPROCESSORS_CONF));
+    if (big && n >= 4) {
+      cpu_set_t set;
+      CPU_ZERO(&set);
+      for (int i = n / 2; i < n; i++) CPU_SET(i, &set);
+      sched_setaffinity(0, sizeof(set), &set);
+    }
+  }
+#endif
 
   auto start_data = static_cast<ThreadStartData*>(parameter);
   assert_not_null(start_data);
@@ -1449,6 +1520,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
     thread->handle_.exit_code_ = 0;
     thread->handle_.signaled_ = true;
     thread->handle_.cond_.notify_all();
+    thread->handle_.NotifyMultiWaiters();
   }
 
   current_thread_ = nullptr;

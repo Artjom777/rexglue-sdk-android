@@ -48,6 +48,9 @@
 #include <filesystem>
 #include <string_view>
 
+REXCVAR_DEFINE_BOOL(window_presenter, true, "UI",
+                    "Attach the emulated GPU's presenter to the window (off when the title presents "
+                    "to the window with its own renderer)");
 REXCVAR_DEFINE_STRING(gpu_plugin, "", "GPU",
                       "GPU emulation plugin to load at startup (e.g. 'xenos'); empty disables "
                       "GPU emulation")
@@ -396,7 +399,11 @@ bool ReXApp::SetupPresentation() {
         SetupOverlays(presenter, immediate_drawer_.get());
       }
     }
-    window_->SetPresenter(presenter);
+    // A window has one surface on Android: a title that presents to the window itself (GTA V's
+    // native renderer under gpu_skip_rendering) needs the emulated presenter kept off it.
+    if (REXCVAR_GET(window_presenter)) {
+      window_->SetPresenter(presenter);
+    }
   } else if (!graphics_system) {
     // Detached mode: the app brings its own renderer and drives its own paint
     // loop. ReXApp owns the returned drawer via immediate_drawer_.

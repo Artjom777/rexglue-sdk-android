@@ -10,10 +10,20 @@
  */
 
 #include <algorithm>
+#include <chrono>
 #include <cinttypes>
+#include <mutex>
+#include <deque>
+#include <vector>
 #include <cmath>
 #include <cstring>
 #include <string_view>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #include <fmt/format.h>
 
@@ -80,6 +90,64 @@ REXCVAR_DEFINE_BOOL(async_shader_compilation, true, "GPU",
                     "pipelines are being prepared.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// gtav native renderer: when the title executable exports rex_skip_rendering_fence, it is called
+// before every EVENT_WRITE_SHD (the GPU fence writes the game waits on before reusing memory) and
+// returns the value to write: the title's renderer may hold a fence back (the real GPU runs well
+// behind the CPU) and copy data it has not read yet. Address is guest physical. While the command
+// processor has been idle for 2 ms, rex_skip_rendering_idle lets it release what it held back
+// (the game is probably waiting for it).
+using SkipRenderingFenceHook = uint32_t (*)(uint32_t address, uint32_t value, uint32_t endian);
+using SkipRenderingIdleHook = void (*)();
+static SkipRenderingIdleHook ResolveSkipRenderingIdleHook() {
+#ifdef _WIN32
+  return reinterpret_cast<SkipRenderingIdleHook>(GetProcAddress(GetModuleHandleW(nullptr), "rex_skip_rendering_idle"));
+#else
+  return reinterpret_cast<SkipRenderingIdleHook>(dlsym(RTLD_DEFAULT, "rex_skip_rendering_idle"));
+#endif
+}
+static SkipRenderingFenceHook ResolveSkipRenderingFenceHook() {
+#ifdef _WIN32
+  return reinterpret_cast<SkipRenderingFenceHook>(
+      GetProcAddress(GetModuleHandleW(nullptr), "rex_skip_rendering_fence"));
+#else
+  return reinterpret_cast<SkipRenderingFenceHook>(dlsym(RTLD_DEFAULT, "rex_skip_rendering_fence"));
+#endif
+}
+
+// Number of guest threads blocked on a GPU fence right now (the title's D3D fence-wait hook), or
+// null. While a thread waits, the lag below only delays the game: kicks are let through one by
+// one until it is released.
+using SkipRenderingGpuWaitersHook = int (*)();
+static SkipRenderingGpuWaitersHook ResolveSkipRenderingGpuWaitersHook() {
+#ifdef _WIN32
+  return reinterpret_cast<SkipRenderingGpuWaitersHook>(
+      GetProcAddress(GetModuleHandleW(nullptr), "rex_skip_rendering_gpu_waiters"));
+#else
+  return reinterpret_cast<SkipRenderingGpuWaitersHook>(dlsym(RTLD_DEFAULT, "rex_skip_rendering_gpu_waiters"));
+#endif
+}
+
+// gtav native renderer (gpu_skip_rendering): this command processor runs right behind the CPU,
+// while the real GPU trails it by up to a frame. The game fills some vertex buffers after the
+// kick that carries their draw and recycles memory once the GPU's fences, counters and read
+// pointer have passed it, so running right behind the CPU tells it too early. With
+// --gpu_skip_rendering_lag_ms the command processor only executes up to write pointers the CPU
+// set at least that long ago (a game waiting on the GPU waits at most that long).
+REXCVAR_DECLARE(bool, gpu_skip_rendering);  // defined by the backend's command processor
+#if defined(__ANDROID__)
+#define GPU_IDLE_SPINS_DEFAULT 8
+#else
+#define GPU_IDLE_SPINS_DEFAULT 500
+#endif
+REXCVAR_DEFINE_INT32(gpu_idle_spins, GPU_IDLE_SPINS_DEFAULT, "GPU",
+                     "Command processor: sched_yield spins while idle before sleeping on the write pointer (each "
+                     "spin also reads the clock; with gpu_skip_rendering_lag_ms the idle comes back every kick, "
+                     "~70% of a core on a phone at 500)");
+REXCVAR_DEFINE_INT32(gpu_skip_rendering_lag_ms, 0, "GPU",
+                     "Command processor latency behind the CPU's kicks (title-side renderer)");
+static std::mutex g_kick_mutex;
+static std::deque<std::pair<uint32_t, std::chrono::steady_clock::time_point>> g_kicks;
+
 namespace rex::graphics {
 
 using namespace rex::graphics::xenos;
@@ -101,6 +169,17 @@ ReadbackResolveMode ParseReadbackResolveMode(std::string_view value) {
 
 }  // namespace
 
+// The running command processor's write-pointer event: rex_skip_rendering_wake (called by a
+// title-side renderer when a game thread starts waiting on the GPU) cuts its idle sleep short.
+static std::atomic<rex::thread::Event*> g_wake_event{nullptr};
+#if defined(_WIN32)
+extern "C" __declspec(dllexport) void rex_skip_rendering_wake() {
+#else
+extern "C" __attribute__((visibility("default"))) void rex_skip_rendering_wake() {
+#endif
+  if (auto* event = g_wake_event.load(std::memory_order_acquire)) event->Set();
+}
+
 CommandProcessor::CommandProcessor(GraphicsSystem* graphics_system,
                                    system::KernelState* kernel_state)
     : memory_(graphics_system->memory()),
@@ -111,9 +190,13 @@ CommandProcessor::CommandProcessor(GraphicsSystem* graphics_system,
       write_ptr_index_event_(rex::thread::Event::CreateAutoResetEvent(false)),
       write_ptr_index_(0) {
   assert_not_null(write_ptr_index_event_);
+  g_wake_event.store(write_ptr_index_event_.get(), std::memory_order_release);
 }
 
-CommandProcessor::~CommandProcessor() = default;
+CommandProcessor::~CommandProcessor() {
+  rex::thread::Event* expected = write_ptr_index_event_.get();
+  g_wake_event.compare_exchange_strong(expected, nullptr);
+}
 
 bool CommandProcessor::Initialize() {
   // Initialize the gamma ramps to their default (linear) values - taken from
@@ -210,7 +293,25 @@ void CommandProcessor::WorkerThreadMain() {
       fn();
     }
 
-    uint32_t write_ptr_index = write_ptr_index_.load();
+    // --gpu_skip_rendering_lag_ms: the newest write pointer that is old enough.
+    auto lagged_write_ptr = [this]() -> uint32_t {
+      int32_t lag = REXCVAR_GET(gpu_skip_rendering_lag_ms);
+      if (lag <= 0) return write_ptr_index_.load();
+      static const SkipRenderingGpuWaitersHook gpu_waiters = ResolveSkipRenderingGpuWaitersHook();
+      std::lock_guard lock(g_kick_mutex);
+      auto ready = std::chrono::steady_clock::now() - std::chrono::milliseconds(lag);
+      while (!g_kicks.empty() && g_kicks.front().second <= ready) {
+        lagged_ptr_ = g_kicks.front().first;
+        g_kicks.pop_front();
+      }
+      // The game is blocked on a fence: the next kick now (one per pass, up to that fence).
+      if (!g_kicks.empty() && read_ptr_index_ == lagged_ptr_ && gpu_waiters && gpu_waiters() > 0) {
+        lagged_ptr_ = g_kicks.front().first;
+        g_kicks.pop_front();
+      }
+      return lagged_ptr_;
+    };
+    uint32_t write_ptr_index = lagged_write_ptr();
     if (write_ptr_index == 0xBAADF00D || read_ptr_index_ == write_ptr_index) {
       SCOPE_profile_cpu_i("gpu", "rex::graphics::CommandProcessor::Stall");
       // We've run out of commands to execute.
@@ -218,17 +319,26 @@ void CommandProcessor::WorkerThreadMain() {
       // event is too high.
       PrepareForWait();
       uint32_t loop_count = 0;
+      static const SkipRenderingIdleHook idle_hook = ResolveSkipRenderingIdleHook();
+      auto idle_start = std::chrono::steady_clock::now();
+      bool idle_reported = false;
       do {
+        if (idle_hook && !idle_reported &&
+            std::chrono::steady_clock::now() - idle_start >= std::chrono::milliseconds(2)) {
+          idle_hook();
+          idle_reported = true;
+        }
         // If we spin around too much, revert to a "low-power" state.
-        if (loop_count > 500) {
-          const int wait_time_ms = 5;
+        if (loop_count > uint32_t(std::max(REXCVAR_GET(gpu_idle_spins), 0))) {
+          const int wait_time_ms =
+              (idle_hook && !idle_reported) || REXCVAR_GET(gpu_skip_rendering_lag_ms) > 0 ? 1 : 5;
           rex::thread::Wait(write_ptr_index_event_.get(), true,
                             std::chrono::milliseconds(wait_time_ms));
         }
 
         rex::thread::MaybeYield();
         loop_count++;
-        write_ptr_index = write_ptr_index_.load();
+        write_ptr_index = lagged_write_ptr();
       } while (worker_running_ && pending_fns_.empty() &&
                (write_ptr_index == 0xBAADF00D || read_ptr_index_ == write_ptr_index));
       ReturnFromWait();
@@ -313,6 +423,11 @@ void CommandProcessor::ShutdownContext() {}
 
 void CommandProcessor::InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) {
   read_ptr_index_ = 0;
+  lagged_ptr_ = 0;
+  {
+    std::lock_guard lock(g_kick_mutex);
+    g_kicks.clear();
+  }
   primary_buffer_ptr_ = ptr;
   primary_buffer_size_ = uint32_t(1) << (size_log2 + 3);
 }
@@ -328,6 +443,10 @@ void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_s
 }
 
 void CommandProcessor::UpdateWritePointer(uint32_t value) {
+  if (REXCVAR_GET(gpu_skip_rendering_lag_ms) > 0) {
+    std::lock_guard lock(g_kick_mutex);
+    g_kicks.emplace_back(value, std::chrono::steady_clock::now());
+  }
   write_ptr_index_ = value;
   write_ptr_index_event_->Set();
 }
@@ -355,7 +474,15 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
 
   // Volatile for the WAIT_REG_MEM loop.
   const_cast<volatile uint32_t&>(regs.values[index]) = value;
-  if (!regs.GetRegisterInfo(index)) {
+  // GetRegisterInfo is a switch over every register with a function-local static per case: once
+  // per register write it was a quarter of the command processor's time. Known registers are
+  // looked up once instead.
+  static const std::vector<bool> known_registers = [&regs] {
+    std::vector<bool> known(RegisterFile::kRegisterCount);
+    for (uint32_t i = 0; i < RegisterFile::kRegisterCount; ++i) known[i] = regs.GetRegisterInfo(i) != nullptr;
+    return known;
+  }();
+  if (!known_registers[index]) {
     REXGPU_DEBUG("GPU: Write to unknown register ({:04X} = {:08X})", index, value);
   }
 
@@ -702,6 +829,12 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
 
   uint32_t base_index = (packet & 0x7FFF);
   uint32_t write_one_reg = (packet >> 15) & 0x1;
+  if (!write_one_reg) {
+    // Consecutive registers (shader constants mostly, ~a million a frame): one range write, which
+    // the backends turn into a byte-swapping copy for the constant ranges.
+    WriteRegisterRangeFromRing(reader, base_index, count);
+    return true;
+  }
   for (uint32_t m = 0; m < count; m++) {
     uint32_t reg_data = reader->ReadAndSwap<uint32_t>();
     uint32_t target_index = write_one_reg ? base_index : base_index + m;
@@ -1213,6 +1346,8 @@ bool CommandProcessor::ExecutePacketType3_EVENT_WRITE_SHD(memory::RingBuffer* re
   }
   auto endianness = static_cast<xenos::Endian>(address & 0x3);
   address &= ~0x3;
+  static const SkipRenderingFenceHook fence_hook = ResolveSkipRenderingFenceHook();
+  if (fence_hook) data_value = fence_hook(address, data_value, uint32_t(endianness));
   data_value = GpuSwap(data_value, endianness);
   memory::store(memory_->TranslatePhysical(address), data_value);
   return true;
@@ -1524,6 +1659,9 @@ bool CommandProcessor::ExecutePacketType3_IM_LOAD(memory::RingBuffer* reader, ui
   uint32_t size_dwords = start_size & 0xFFFF;  // dwords
   assert_true(start == 0);
 
+  // --gpu_skip_rendering: nothing draws with the shader (a title-side renderer does), and
+  // hashing + looking up every loaded shader was ~7% of the command processor.
+  if (REXCVAR_GET(gpu_skip_rendering)) return true;
   auto shader =
       LoadShader(shader_type, addr, memory_->TranslatePhysical<uint32_t*>(addr), size_dwords);
   switch (shader_type) {
@@ -1554,6 +1692,10 @@ bool CommandProcessor::ExecutePacketType3_IM_LOAD_IMMEDIATE(memory::RingBuffer* 
   assert_true(start == 0);
   assert_true(reader->read_count() >= size_dwords * 4);
   assert_true(count - 2 >= size_dwords);
+  if (REXCVAR_GET(gpu_skip_rendering)) {
+    reader->AdvanceRead(size_dwords * sizeof(uint32_t));
+    return true;
+  }
   auto shader = LoadShader(shader_type, uint32_t(reader->read_ptr()),
                            reinterpret_cast<uint32_t*>(reader->read_ptr()), size_dwords);
   switch (shader_type) {
@@ -1594,11 +1736,11 @@ bool CommandProcessor::ExecutePacketType3_VIZ_QUERY(memory::RingBuffer* reader, 
     // On hardware this clears the internal state of the scan converter (which
     // is different to the register)
     WriteRegister(XE_GPU_REG_VGT_EVENT_INITIATOR, VIZQUERY_START);
-    REXGPU_INFO("Begin viz query ID {:02X}", id);
+    REXGPU_DEBUG("Begin viz query ID {:02X}", id);
   } else {
     // end the viz query
     WriteRegister(XE_GPU_REG_VGT_EVENT_INITIATOR, VIZQUERY_END);
-    REXGPU_INFO("End viz query ID {:02X}", id);
+    REXGPU_DEBUG("End viz query ID {:02X}", id);
     // The scan converter writes the internal result back to the register here.
     // We just fake it and say it was visible in case it is read back.
     if (id < 32) {

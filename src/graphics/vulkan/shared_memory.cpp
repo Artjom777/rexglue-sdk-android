@@ -23,6 +23,9 @@
 #include <rex/math.h>
 #include <rex/ui/vulkan/util.h>
 
+REXCVAR_DECLARE(bool, gpu_skip_rendering);
+REXCVAR_DEFINE_BOOL(vulkan_skip_rendering_small_shared_memory, true, "GPU/Vulkan",
+                    "With gpu_skip_rendering, a 1 MB shared memory buffer instead of 512 MB");
 REXCVAR_DEFINE_BOOL(vulkan_sparse_shared_memory, true, "GPU/Vulkan",
                     "Use sparse shared memory on Vulkan")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
@@ -56,6 +59,11 @@ bool VulkanSharedMemory::Initialize() {
   buffer_create_info.pNext = nullptr;
   buffer_create_info.flags = sparse_flags;
   buffer_create_info.size = kBufferSize;
+  // A title-side renderer (gpu_skip_rendering) never draws through this buffer: a token 1 MB
+  // instead of 512 MB of GPU memory (8 GB Macs swap with it).
+  if (REXCVAR_GET(gpu_skip_rendering) && REXCVAR_GET(vulkan_skip_rendering_small_shared_memory)) {
+    buffer_create_info.size = 1 << 20;
+  }
   buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
   buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;

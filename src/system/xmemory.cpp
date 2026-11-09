@@ -13,7 +13,7 @@
 #include <cstring>
 #include <utility>
 
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_MAC || REX_PLATFORM_ANDROID
 #include <sys/mman.h>
 #endif
 
@@ -161,13 +161,26 @@ bool Memory::Initialize() {
   // Attempt to create our views. This may fail at the first address
   // we pick, so try a few times.
   mapping_base_ = 0;
-  for (size_t n = 32; n < 64; n++) {
+  for (size_t n = 32; n < 40; n++) {
     auto mapping_base = reinterpret_cast<uint8_t*>(1ull << n);
     if (!MapViews(mapping_base)) {
       mapping_base_ = mapping_base;
       break;
     }
   }
+#if REX_PLATFORM_ANDROID
+  if (!mapping_base_) {
+    // If powers of two collided with ART/Vulkan driver/Scudo mappings,
+    // search in 4 GB increments across the user address space.
+    for (uint64_t k = 1; k < 64; k++) {
+      auto mapping_base = reinterpret_cast<uint8_t*>(k * 0x100000000ull);
+      if (!MapViews(mapping_base)) {
+        mapping_base_ = mapping_base;
+        break;
+      }
+    }
+  }
+#endif
   if (!mapping_base_) {
     REXSYS_ERROR("Unable to find a continuous block in the 64bit address space.");
     assert_always();
@@ -363,6 +376,31 @@ int Memory::MapViews(uint8_t* mapping_base) {
   // 0xE0000000 4 KB offset is emulated via host_address_offset and on the CPU
   // side if system allocation granularity is bigger than 4 KB.
   uint64_t granularity_mask = ~uint64_t(system_allocation_granularity_ - 1);
+#if REX_PLATFORM_ANDROID
+  // The views are mapped with MAP_FIXED, which silently replaces whatever is already there. On a
+  // desktop the low 64 GB are empty, but on Android the GPU driver, Scudo and ART map there, and
+  // a replaced driver mapping faults forever (vkCreateSwapchainKHR spun in the fault handler).
+  // Reserve the whole span without replacing anything first; the views then replace only it.
+  uint64_t span = 0;
+  for (size_t n = 0; n < rex::countof(map_info); n++) {
+    span = std::max<uint64_t>(span, map_info[n].virtual_address_end + 1);
+  }
+  {
+    void* reserved = mmap(mapping_base, span, PROT_NONE,
+                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+    if (reserved == MAP_FAILED && (errno == EINVAL || errno == EOPNOTSUPP || errno == ENOSYS)) {
+      reserved = mmap(mapping_base, span, PROT_NONE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    }
+    if (reserved == MAP_FAILED) {
+      return 1;
+    }
+    if (reserved != mapping_base) {
+      munmap(reserved, span);
+      return 1;
+    }
+  }
+#endif
   for (size_t n = 0; n < rex::countof(map_info); n++) {
     views_.all_views[n] = reinterpret_cast<uint8_t*>(rex::memory::MapFileView(
         mapping_, mapping_base + map_info[n].virtual_address_start,
@@ -371,6 +409,9 @@ int Memory::MapViews(uint8_t* mapping_base) {
     if (!views_.all_views[n]) {
       // Failed, so bail and try again.
       UnmapViews();
+#if REX_PLATFORM_ANDROID
+      munmap(mapping_base, span);
+#endif
       return 1;
     }
   }

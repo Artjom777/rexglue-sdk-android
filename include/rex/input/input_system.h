@@ -14,6 +14,7 @@
 #include <atomic>
 #include <bitset>
 #include <memory>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -101,6 +102,9 @@ class InputSystem : public system::IInputSystem {
   std::atomic<int> ui_input_blockers_{0};
   // Masked out per user until the guest sees them released.
   std::array<uint16_t, kMaxGuestUsers> consumed_buttons_ = {};
+
+  // Serializes the public X* entry points (several guest threads poll input at once).
+  std::recursive_mutex mutex_;
 };
 
 /// Create a default InputSystem with SDL + MnK + NOP drivers.

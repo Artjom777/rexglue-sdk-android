@@ -22,21 +22,21 @@
 #include <rex/string.h>
 #include <rex/ui/vulkan/device.h>
 
-REXCVAR_DEFINE_BOOL(vulkan_require_fragment_stores_and_atomics, true, "UI/Vulkan",
-                    "Deprecated and ignored for parity; fragmentStoresAndAtomics is always "
-                    "required for Vulkan GPU emulation")
+REXCVAR_DEFINE_BOOL(vulkan_require_fragment_stores_and_atomics,
+                    !REX_PLATFORM_MAC && !REX_PLATFORM_ANDROID, "UI/Vulkan",
+                    "Require fragmentStoresAndAtomics support for Vulkan GPU emulation")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-REXCVAR_DEFINE_BOOL(vulkan_require_vertex_pipeline_stores_and_atomics, true, "UI/Vulkan",
-                    "Deprecated and ignored for parity; vertexPipelineStoresAndAtomics is always "
-                    "required for Vulkan GPU emulation")
+REXCVAR_DEFINE_BOOL(vulkan_require_vertex_pipeline_stores_and_atomics,
+                    !REX_PLATFORM_MAC && !REX_PLATFORM_ANDROID, "UI/Vulkan",
+                    "Require vertexPipelineStoresAndAtomics support for Vulkan GPU emulation")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-// Apple Silicon / MoltenVK does not expose geometryShader or fillModeNonSolid;
-// default both to false on macOS so the device can still be selected.
-REXCVAR_DEFINE_BOOL(vulkan_require_geometry_shader, !REX_PLATFORM_MAC, "UI/Vulkan",
+// Apple Silicon / MoltenVK and Android / Mali GPUs do not expose geometryShader or fillModeNonSolid;
+// default both to false on macOS and Android so the device can still be selected.
+REXCVAR_DEFINE_BOOL(vulkan_require_geometry_shader, !REX_PLATFORM_MAC && !REX_PLATFORM_ANDROID, "UI/Vulkan",
                     "Require geometryShader support for Vulkan GPU emulation (disable to allow "
                     "fallback primitive emulation paths)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-REXCVAR_DEFINE_BOOL(vulkan_require_fill_mode_non_solid, !REX_PLATFORM_MAC, "UI/Vulkan",
+REXCVAR_DEFINE_BOOL(vulkan_require_fill_mode_non_solid, !REX_PLATFORM_MAC && !REX_PLATFORM_ANDROID, "UI/Vulkan",
                     "Require fillModeNonSolid support for Vulkan GPU emulation (disable to "
                     "allow fallback to solid fill for line/point polygon modes)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
@@ -109,14 +109,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
           properties.deviceName);
       return nullptr;
     }
-    if (!supported_features.fragmentStoresAndAtomics) {
+    if (REXCVAR_GET(vulkan_require_fragment_stores_and_atomics) &&
+        !supported_features.fragmentStoresAndAtomics) {
       REXLOG_WARN(
           "Vulkan device '{}' doesn't support fragmentStoresAndAtomics, which "
           "is required for Vulkan GPU emulation parity",
           properties.deviceName);
       return nullptr;
     }
-    if (!supported_features.vertexPipelineStoresAndAtomics) {
+    if (REXCVAR_GET(vulkan_require_vertex_pipeline_stores_and_atomics) &&
+        !supported_features.vertexPipelineStoresAndAtomics) {
       REXLOG_WARN(
           "Vulkan device '{}' doesn't support vertexPipelineStoresAndAtomics, which "
           "is required for Vulkan GPU emulation parity",

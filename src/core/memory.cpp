@@ -205,6 +205,7 @@ void copy_and_swap_16_aligned(void* dst_ptr, const void* src_ptr, size_t count) 
 }
 
 void copy_and_swap_16_unaligned(void* dst_ptr, const void* src_ptr, size_t count) {
+  if (!dst_ptr || !src_ptr || !count) return;
   auto dst = reinterpret_cast<uint8_t*>(dst_ptr);
   auto src = reinterpret_cast<const uint8_t*>(src_ptr);
 
@@ -237,6 +238,7 @@ void copy_and_swap_32_aligned(void* dst, const void* src, size_t count) {
 }
 
 void copy_and_swap_32_unaligned(void* dst_ptr, const void* src_ptr, size_t count) {
+  if (!dst_ptr || !src_ptr || !count) return;
   auto dst = reinterpret_cast<uint8_t*>(dst_ptr);
   auto src = reinterpret_cast<const uint8_t*>(src_ptr);
 
@@ -267,6 +269,7 @@ void copy_and_swap_64_aligned(void* dst, const void* src, size_t count) {
 }
 
 void copy_and_swap_64_unaligned(void* dst_ptr, const void* src_ptr, size_t count) {
+  if (!dst_ptr || !src_ptr || !count) return;
   auto dst = reinterpret_cast<uint8_t*>(dst_ptr);
   auto src = reinterpret_cast<const uint8_t*>(src_ptr);
 
@@ -297,13 +300,19 @@ void copy_and_swap_16_in_32_aligned(void* dst, const void* src, size_t count) {
 }
 
 void copy_and_swap_16_in_32_unaligned(void* dst_ptr, const void* src_ptr, size_t count) {
-  auto dst = reinterpret_cast<uint16_t*>(dst_ptr);
-  auto src = reinterpret_cast<const uint16_t*>(src_ptr);
+  if (!dst_ptr || !src_ptr || !count) return;
+  auto dst = reinterpret_cast<uint8_t*>(dst_ptr);
+  auto src = reinterpret_cast<const uint8_t*>(src_ptr);
   while (count > 0) {
-    uint16_t word0 = *src++;
-    uint16_t word1 = *src++;
-    *dst++ = word1;
-    *dst++ = word0;
+    uint16_t word0, word1;
+    std::memcpy(&word0, src, 2);
+    src += 2;
+    std::memcpy(&word1, src, 2);
+    src += 2;
+    std::memcpy(dst, &word1, 2);
+    dst += 2;
+    std::memcpy(dst, &word0, 2);
+    dst += 2;
 
     count--;
   }

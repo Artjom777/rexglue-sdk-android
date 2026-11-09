@@ -262,6 +262,12 @@ extern PPCFuncMapping PPCFuncMappings[];
 
 #define REX_QUERY_TIMEBASE() rex::chrono::Clock::QueryGuestTickCount()
 
+// Memory barriers (sync, lwsync, eieio). x86: lwsync/eieio need no instruction, only a compiler
+// barrier; ARM64: dmb ish (lwsync orders everything but store->load, which a full dmb covers).
+#define REX_SYNC() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+#define REX_LWSYNC() __atomic_thread_fence(__ATOMIC_ACQ_REL)
+#define REX_EIEIO() __atomic_thread_fence(__ATOMIC_RELEASE)
+
 //=============================================================================
 // Setjmp/Longjmp
 //=============================================================================

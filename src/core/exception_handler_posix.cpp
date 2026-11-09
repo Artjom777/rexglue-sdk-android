@@ -28,6 +28,12 @@
 #include <rex/logging.h>
 #include <rex/math.h>
 #include <rex/platform.h>
+#if REX_PLATFORM_ANDROID
+#include <dlfcn.h>
+#include <unistd.h>
+#include <cstdio>
+#include <sys/uio.h>
+#endif
 
 #include <ucontext.h>
 
@@ -36,7 +42,7 @@ namespace rex::arch {
 bool signal_handlers_installed_ = false;
 struct sigaction original_sigill_handler_;
 struct sigaction original_sigsegv_handler_;
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_MAC || REX_PLATFORM_ANDROID
 struct sigaction original_sigbus_handler_;
 #endif
 
@@ -168,12 +174,10 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
       ex.InitializeIllegalInstruction(&thread_context);
       break;
     case SIGBUS:
-      // On macOS, SIGBUS (KERN_PROTECTION_FAILURE) is raised for writes to
-      // read-protected pages — the same scenario that raises SIGSEGV on Linux.
-      // Fall through to treat it as an access violation.
-#if !REX_PLATFORM_MAC
-      // On non-Mac POSIX, SIGBUS is a bus error (misaligned access), not a
-      // protection fault — don't handle it here.
+      // On macOS and Android, SIGBUS is raised for writes to read-protected pages
+      // or unaligned access — treat it as an access violation attempt.
+#if !REX_PLATFORM_MAC && !REX_PLATFORM_ANDROID
+      // On non-Mac/non-Android POSIX, SIGBUS is an unhandled bus error.
       assert_unhandled_case(signal_number);
       return;
 #endif
@@ -225,6 +229,12 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
         access_violation_operation = (mcontext_esr->esr & (UINT64_C(1) << 6))
                                          ? Exception::AccessViolationOperation::kWrite
                                          : Exception::AccessViolationOperation::kRead;
+      } else if ((mcontext_esr && ((mcontext_esr->esr >> 26) & 0b111110) == 0b100000) ||
+                 reinterpret_cast<uint64_t>(signal_info->si_addr) == mcontext.pc) {
+        // Instruction abort (a jump to an unmapped address, e.g. a null function pointer):
+        // there is no instruction to decode, and reading it here would fault again inside the
+        // handler, which the kernel answers by killing the process without any report.
+        access_violation_operation = Exception::AccessViolationOperation::kUnknown;
       } else {
         // Determine the memory access direction based on which instruction has
         // requested it.
@@ -417,6 +427,56 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
       return;
     }
   }
+#if REX_PLATFORM_ANDROID && REX_ARCH_ARM64
+  // Under ART the restored handler is not debuggerd's, so no tombstone is written: report the
+  // fault (pc, lr and a frame-pointer walk as module+offset) on stderr first.
+  {
+    auto print_frame = [](const char* tag, uint64_t pc) {
+      Dl_info info{};
+      if (dladdr(reinterpret_cast<void*>(pc), &info) && info.dli_fname) {
+        fprintf(stderr, "  %s %016llx %s+0x%llx %s\n", tag, (unsigned long long)pc, info.dli_fname,
+                (unsigned long long)(pc - uint64_t(info.dli_fbase)), info.dli_sname ? info.dli_sname : "");
+      } else {
+        fprintf(stderr, "  %s %016llx ?\n", tag, (unsigned long long)pc);
+      }
+    };
+    fprintf(stderr, "unhandled signal %d at %p (thread %d)\n", signal_number, signal_info->si_addr,
+            int(gettid()));
+    print_frame("pc", thread_context.pc);
+    print_frame("lr", thread_context.x[30]);
+    uint64_t fp = thread_context.x[29];
+    for (int i = 0; i < 32 && fp && (fp & 7) == 0; i++) {
+      uint64_t frame[2] = {};
+      struct iovec local{&frame, sizeof(frame)}, remote{reinterpret_cast<void*>(fp), sizeof(frame)};
+      if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != sizeof(frame)) break;
+      uint64_t next = frame[0];
+      uint64_t ret = frame[1];
+      if (!ret) break;
+      print_frame("fp", ret);
+      if (next <= fp) break;
+      fp = next;
+    }
+    fflush(stderr);
+  }
+#endif
+  // No handler claimed the fault: returning would re-run the faulting instruction forever (a
+  // silent spin, as seen in a Vulkan driver on Android). Put the previous handler back so the
+  // re-executed fault reaches it (the system crash reporter / debuggerd tombstone).
+  switch (signal_number) {
+    case SIGILL:
+      sigaction(SIGILL, &original_sigill_handler_, nullptr);
+      break;
+    case SIGSEGV:
+      sigaction(SIGSEGV, &original_sigsegv_handler_, nullptr);
+      break;
+#if REX_PLATFORM_MAC || REX_PLATFORM_ANDROID
+    case SIGBUS:
+      sigaction(SIGBUS, &original_sigbus_handler_, nullptr);
+      break;
+#endif
+    default:
+      break;
+  }
 }
 
 void ExceptionHandler::Install(Handler fn, void* data) {
@@ -433,7 +493,7 @@ void ExceptionHandler::Install(Handler fn, void* data) {
     if (sigaction(SIGSEGV, &signal_handler, &original_sigsegv_handler_) != 0) {
       assert_always("Failed to install new SIGSEGV handler");
     }
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_MAC || REX_PLATFORM_ANDROID
     if (sigaction(SIGBUS, &signal_handler, &original_sigbus_handler_) != 0) {
       assert_always("Failed to install new SIGBUS handler");
     }
@@ -478,7 +538,7 @@ void ExceptionHandler::Uninstall(Handler fn, void* data) {
       if (sigaction(SIGSEGV, &original_sigsegv_handler_, NULL) != 0) {
         assert_always("Failed to restore original SIGSEGV handler");
       }
-#if REX_PLATFORM_MAC
+#if REX_PLATFORM_MAC || REX_PLATFORM_ANDROID
       if (sigaction(SIGBUS, &original_sigbus_handler_, NULL) != 0) {
         assert_always("Failed to restore original SIGBUS handler");
       }

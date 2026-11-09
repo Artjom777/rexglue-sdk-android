@@ -11,9 +11,11 @@
 
 #pragma once
 
+#include <atomic>
 #include <mutex>
 #include <queue>
 #include <stack>
+#include <thread>
 
 #include <rex/audio/audio_driver.h>
 #include <rex/thread.h>
@@ -49,6 +51,21 @@ class SDLAudioDriver : public AudioDriver {
   std::queue<float*> frames_queued_ = {};
   std::stack<float*> frames_unused_ = {};
   std::mutex frames_mutex_ = {};
+
+  // --audio_release_pacing: the callback banks one credit per consumed frame and this thread
+  // releases the guest semaphore once per frame period, so a device that takes several frames
+  // per callback (WASAPI shared mode: 10 ms) still sees one audio pass every 5.3 ms.
+  void PacerThread();
+  // Without a device (iOS audio session refused): frames consumed silently, device retried.
+  bool OpenDevice();
+  void CloseDevice();
+  void SilentThread();
+  std::thread silent_;
+  std::atomic<bool> silent_stop_{false};
+  std::thread pacer_;
+  std::atomic<bool> pacer_stop_{false};
+  std::atomic<int32_t> pending_releases_{0};
+  bool pacing_ = false;
 };
 
 }  // namespace rex::audio::sdl

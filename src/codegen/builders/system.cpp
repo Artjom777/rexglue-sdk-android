@@ -31,32 +31,17 @@ bool build_attn(BuilderContext& ctx) {
 }
 
 bool build_sync(BuilderContext& ctx) {
-  // sync: full barrier. Orders all combinations including StoreLoad,
-  // which x86_64 TSO does not. seq_cst is the exact C++ mapping.
-  //
-  // x86_64: emits mfence.
-  // ARM64:  emits dmb ish.
-  ctx.println("\tstd::atomic_thread_fence(std::memory_order_seq_cst);");
+  ctx.println("\tREX_SYNC();");
   return true;
 }
 
 bool build_lwsync(BuilderContext& ctx) {
-  // lwsync: acquire-release fence. Orders LoadLoad, LoadStore, StoreStore,
-  // but NOT StoreLoad. acq_rel matches exactly.
-  //
-  // x86_64: TSO already orders those three.
-  // ARM64:  emits dmb ish.
-  ctx.println("\tstd::atomic_thread_fence(std::memory_order_acq_rel);");
+  ctx.println("\tREX_LWSYNC();");
   return true;
 }
 
 bool build_eieio(BuilderContext& ctx) {
-  // eieio: I/O ordering. No separate I/O space on the host, so seq_cst
-  // is the safe conservative mapping.
-  //
-  // x86_64: emits mfence.
-  // ARM64:  emits dmb ish.
-  ctx.println("\tstd::atomic_thread_fence(std::memory_order_seq_cst);");
+  ctx.println("\tREX_EIEIO();");
   return true;
 }
 

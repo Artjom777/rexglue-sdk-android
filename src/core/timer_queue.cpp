@@ -15,7 +15,7 @@
 #include <disruptorplus/multi_threaded_claim_strategy.hpp>
 #include <disruptorplus/ring_buffer.hpp>
 #include <disruptorplus/sequence_barrier.hpp>
-#include <disruptorplus/spin_wait_strategy.hpp>
+#include <disruptorplus/blocking_wait_strategy.hpp>
 
 #include <rex/assert.h>
 #include <rex/thread.h>
@@ -69,7 +69,8 @@ class TimerQueue {
         // Consume new wait items and add them to sorted wait queue
         dp::sequence_t available = claim_strategy_.wait_until_published(
             next_sequence, next_sequence - 1,
-            wait_queue_.empty() ? clock::time_point::max() : wait_queue_.front()->due_);
+            // (not time_point::max(): a condition variable's timed wait can overflow on it)
+            wait_queue_.empty() ? clock::now() + std::chrono::seconds(1) : wait_queue_.front()->due_);
 
         // Check for timeout
         if (available != next_sequence - 1) {
@@ -142,9 +143,11 @@ class TimerQueue {
   // This ring buffer will be used to introduce timers queued by the public API
   static constexpr size_t kWaitCount = 512;
   dp::ring_buffer<std::shared_ptr<WaitItem>> buffer_;
-  dp::spin_wait_strategy wait_strategy_;
-  dp::multi_threaded_claim_strategy<dp::spin_wait_strategy> claim_strategy_;
-  dp::sequence_barrier<dp::spin_wait_strategy> consumed_;
+  // Blocking, not spin: the spin strategy yielded in a loop while idle (~30% of a core on an M1,
+  // plus a sysctl per spin_wait for hardware_concurrency).
+  dp::blocking_wait_strategy wait_strategy_;
+  dp::multi_threaded_claim_strategy<dp::blocking_wait_strategy> claim_strategy_;
+  dp::sequence_barrier<dp::blocking_wait_strategy> consumed_;
 
   // This is a _sorted_ (ascending due_) list of active timers managed by a
   // dedicated thread

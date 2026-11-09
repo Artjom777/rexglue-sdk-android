@@ -189,6 +189,8 @@ class XObject {
 
   void SetAttributes(uint32_t obj_attributes_ptr);
 
+  void ReportLongWait();
+  void TraceHandleOp(const char* op);
   X_STATUS Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t alertable,
                 uint64_t* opt_timeout);
   static X_STATUS SignalAndWait(XObject* signal_object, XObject* wait_object, uint32_t wait_reason,

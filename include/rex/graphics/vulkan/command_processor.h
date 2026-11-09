@@ -426,6 +426,12 @@ class VulkanCommandProcessor : public CommandProcessor {
 
   void ClearTransientDescriptorPools();
   bool IssueCopy_ReadbackResolvePath();
+  void DumpResolveForComparison(uint32_t address, uint32_t length, const uint8_t* data);
+  void DumpDrawConstantsForComparison(uint32_t prim, uint32_t count);
+  uint32_t emu_dump_sequence_ = 0;
+  uint64_t emu_dump_frame_ = 0;
+  uint64_t emu_dump_target_ = 0;
+  bool EmuDumpActive();
   bool IssueDraw_MemexportReadbackFullPath(uint32_t total_size);
   bool IssueDraw_MemexportReadbackFastPath(uint32_t total_size);
 

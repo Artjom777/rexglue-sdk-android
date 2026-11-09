@@ -10,8 +10,15 @@
  */
 
 #include <vector>
+#include <rex/cvar.h>
+#include <atomic>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include <rex/chrono/clock.h>
+#include <rex/memory/utils.h>
 #include <rex/stream.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/util/string_utils.h>  // For TranslateAnsiStringAddress
@@ -200,6 +207,61 @@ uint32_t XObject::TimeoutTicksToMs(int64_t timeout_ticks) {
   }
 }
 
+REXCVAR_DEFINE_STRING(trace_handles, "", "Kernel",
+                      "Log waits/signals on a guest handle range, e.g. F8000910-F8000924 (debugging)");
+
+void XObject::TraceHandleOp(const char* op) {
+  static uint32_t lo = 0, hi = 0;
+  static std::atomic<int> budget{-1};
+  if (budget.load() < 0) {
+    auto spec = REXCVAR_GET(trace_handles);
+    auto dash = spec.find('-');
+    if (dash != std::string::npos) {
+      lo = uint32_t(std::stoul(spec.substr(0, dash), nullptr, 16));
+      hi = uint32_t(std::stoul(spec.substr(dash + 1), nullptr, 16));
+    }
+    budget = 5000;
+  }
+  uint32_t h = handle();
+  if (!lo || h < lo || h > hi || budget.fetch_sub(1) <= 0) return;
+  auto* thread = XThread::IsInThread() ? XThread::GetCurrentThread() : nullptr;
+  uint32_t lr = thread && thread->thread_state() ? uint32_t(thread->thread_state()->context()->lr) : 0;
+  REXSYS_WARN("trace {} handle {:08X} thread {} lr {:08X}", op, h, thread ? thread->thread_id() : 0, lr);
+}
+
+void XObject::ReportLongWait() {
+  auto* thread = XThread::IsInThread() ? XThread::GetCurrentThread() : nullptr;
+  if (!thread || !thread->thread_state()) {
+    REXSYS_WARN("long wait (>15s): host thread on handle {:08X} type {}", handle(), int(type()));
+    return;
+  }
+  auto* ctx = thread->thread_state()->context();
+  auto* mem = memory();
+  // Guest call chain from the PPC back-chain: [sp] = caller sp, saved LR at caller_sp - 8.
+  std::string chain = fmt::format("{:08X}", uint32_t(ctx->lr));
+  uint32_t sp = ctx->r1.u32;
+  // Only touch committed, readable guest pages: a bad back-chain must never fault.
+  auto readable = [mem](uint32_t guest) {
+#ifdef _WIN32
+    MEMORY_BASIC_INFORMATION mbi{};
+    auto* host = mem->TranslateVirtual(guest);
+    return VirtualQuery(host, &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT &&
+           (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ |
+                           PAGE_EXECUTE_READWRITE)) && !(mbi.Protect & PAGE_GUARD);
+#else
+    return false;
+#endif
+  };
+  for (int i = 0; i < 10 && readable(sp); i++) {
+    uint32_t caller_sp = rex::memory::load_and_swap<uint32_t>(mem->TranslateVirtual(sp));
+    if (caller_sp <= sp || caller_sp - sp > 0x100000 || !readable(caller_sp - 8)) break;
+    chain += fmt::format(" < {:08X}", rex::memory::load_and_swap<uint32_t>(mem->TranslateVirtual(caller_sp - 8)));
+    sp = caller_sp;
+  }
+  REXSYS_WARN("long wait (>15s): thread {} on handle {:08X} type {} | lr chain {}",
+              thread->thread_id(), handle(), int(type()), chain);
+}
+
 X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t alertable,
                        uint64_t* opt_timeout) {
   auto wait_handle = GetWaitHandle();
@@ -212,8 +274,19 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t a
                                       TimeoutTicksToMs(*opt_timeout)))
                                 : std::chrono::milliseconds::max();
 
+  TraceHandleOp(opt_timeout ? "wait(timed)" : "wait");
   XThread::CheckTitleTermination();
-  auto result = rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
+  auto result = rex::thread::WaitResult::kTimeout;
+  if (!opt_timeout) {
+    // Long-wait watchdog: report infinite waits that last over 15 s, then keep waiting.
+    result = rex::thread::Wait(wait_handle, alertable ? true : false, std::chrono::seconds(15));
+    if (result == rex::thread::WaitResult::kTimeout) {
+      ReportLongWait();
+      result = rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
+    }
+  } else {
+    result = rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
+  }
   XThread::CheckTitleTermination();
   switch (result) {
     case rex::thread::WaitResult::kSuccess:
@@ -264,6 +337,7 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
                                uint64_t* opt_timeout) {
   std::vector<rex::thread::WaitHandle*> wait_handles(count);
   for (size_t i = 0; i < count; ++i) {
+    objects[i]->TraceHandleOp("wait-multi");
     wait_handles[i] = objects[i]->GetWaitHandle();
     assert_not_null(wait_handles[i]);
   }
