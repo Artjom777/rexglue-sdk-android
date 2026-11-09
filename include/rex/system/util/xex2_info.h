@@ -551,14 +551,15 @@ struct xex2_header {
 };
 
 struct xex2_page_descriptor {
-  union {
-    be<uint32_t> value;  // 0x0
-    struct {
-      xex2_section_type info : 4;
-      uint32_t page_count : 28;
-    };
-  };
+  be<uint32_t> value;  // 0x0
   char data_digest[0x14];  // 0x4
+
+  xex2_section_type info() const {
+    return static_cast<xex2_section_type>(static_cast<uint32_t>(value) & 0xF);
+  }
+  uint32_t page_count() const {
+    return (static_cast<uint32_t>(value) >> 4) & 0x0FFFFFFF;
+  }
 };
 
 struct xex2_security_info {

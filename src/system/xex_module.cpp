@@ -560,11 +560,8 @@ int XexModule::ReadImageBasicCompressed(const void* xex_addr, size_t xex_length)
   // Calculate the total size of the XEX image from its headers.
   uint32_t total_size = 0;
   for (uint32_t i = 0; i < xex_security_info()->page_descriptor_count; i++) {
-    // Byteswap the bitfield manually.
-    xex2_page_descriptor desc;
-    desc.value = rex::byte_swap(xex_security_info()->page_descriptors[i].value);
-
-    total_size += desc.page_count * heap->page_size();
+    const auto& desc = xex_security_info()->page_descriptors[i];
+    total_size += desc.page_count() * heap->page_size();
   }
 
   // Allocate in-place the XEX memory.
@@ -956,18 +953,16 @@ bool XexModule::LoadContinue() {
 
   auto sec_header = xex_security_info();
   for (uint32_t i = 0, page = 0; i < sec_header->page_descriptor_count; i++) {
-    // Byteswap the bitfield manually.
-    xex2_page_descriptor desc;
-    desc.value = rex::byte_swap(sec_header->page_descriptors[i].value);
+    const auto& desc = sec_header->page_descriptors[i];
 
     const auto start_address = base_address_ + (page * page_size);
-    const auto end_address = start_address + (desc.page_count * page_size);
-    if (desc.info == XEX_SECTION_CODE) {
+    const auto end_address = start_address + (desc.page_count() * page_size);
+    if (desc.info() == XEX_SECTION_CODE) {
       low_address_ = std::min(low_address_, start_address);
       high_address_ = std::max(high_address_, end_address);
     }
 
-    page += desc.page_count;
+    page += desc.page_count();
   }
 
   // NOTE(tomc): Backend notification not needed - no JIT in rexglue
@@ -1017,13 +1012,11 @@ bool XexModule::LoadContinue() {
 
   // Setup memory protection.
   for (uint32_t i = 0, page = 0; i < sec_header->page_descriptor_count; i++) {
-    // Byteswap the bitfield manually.
-    xex2_page_descriptor desc;
-    desc.value = rex::byte_swap(sec_header->page_descriptors[i].value);
+    const auto& desc = sec_header->page_descriptors[i];
 
     auto address = base_address_ + (page * page_size);
-    auto size = desc.page_count * page_size;
-    switch (desc.info) {
+    auto size = desc.page_count() * page_size;
+    switch (desc.info()) {
       case XEX_SECTION_CODE:
       case XEX_SECTION_READONLY_DATA:
         heap->Protect(address, size,
@@ -1036,7 +1029,7 @@ bool XexModule::LoadContinue() {
         break;
     }
 
-    page += desc.page_count;
+    page += desc.page_count();
   }
 
   // Populate binary introspection data

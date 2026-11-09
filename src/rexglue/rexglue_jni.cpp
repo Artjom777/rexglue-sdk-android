@@ -49,7 +49,23 @@ JavaVM* g_jvm = nullptr;
 jobject g_callback_obj = nullptr;
 jmethodID g_log_method = nullptr;
 
+static void WriteToLogFile(const char* msg) {
+  if (!msg || !*msg) return;
+  static std::mutex s_log_file_mutex;
+  std::lock_guard<std::mutex> lock(s_log_file_mutex);
+  FILE* fp = std::fopen("/sdcard/rexglue_log.txt", "a");
+  if (!fp) {
+    fp = std::fopen("/storage/emulated/0/rexglue_log.txt", "a");
+  }
+  if (fp) {
+    std::fputs(msg, fp);
+    std::fputc('\n', fp);
+    std::fclose(fp);
+  }
+}
+
 void SendLogToJava(const char* msg) {
+  WriteToLogFile(msg);
   if (!g_jvm || !g_callback_obj || !g_log_method) return;
   JNIEnv* env = nullptr;
   bool attached = false;

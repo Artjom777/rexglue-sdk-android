@@ -76,11 +76,8 @@ class XexModule : public Module {
     auto heap = memory()->LookupHeap(base_address_);
     uint32_t total_size = 0;
     for (uint32_t i = 0; i < xex_security_info()->page_descriptor_count; i++) {
-      // Byteswap the bitfield manually.
-      xex2_page_descriptor desc;
-      desc.value = rex::byte_swap(xex_security_info()->page_descriptors[i].value);
-
-      total_size += desc.page_count * heap->page_size();
+      const auto& desc = xex_security_info()->page_descriptors[i];
+      total_size += desc.page_count() * heap->page_size();
     }
     return total_size;
   }

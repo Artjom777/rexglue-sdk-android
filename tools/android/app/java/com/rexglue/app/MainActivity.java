@@ -785,6 +785,7 @@ public class MainActivity extends Activity {
 
         executor.execute(() -> {
             boolean success = false;
+            int resCode = -1;
             try {
                 // Elevate thread scheduling priority to foreground
                 Process.setThreadPriority(Process.THREAD_PRIORITY_FOREGROUND);
@@ -794,16 +795,17 @@ public class MainActivity extends Activity {
                 }
 
                 if (isNativeLoaded) {
-                    int res = nativeRunCodegenMulti(
+                    resCode = nativeRunCodegenMulti(
                             isoList.toArray(new String[0]),
                             updatePath,
                             projectName,
                             outputDir.getAbsolutePath(),
                             cbMaliVk.isChecked(),
                             mode);
-                    success = (res == 0);
+                    success = (resCode == 0);
                 } else {
                     success = runCodegenCliFallback(isoList.get(0), outputDir.getAbsolutePath());
+                    resCode = success ? 0 : -99;
                 }
             } catch (Exception e) {
                 appendLog("[ERROR] Исключение: " + e.getMessage());
@@ -812,6 +814,7 @@ public class MainActivity extends Activity {
             }
 
             final boolean finalSuccess = success;
+            final int finalResCode = resCode;
             runOnUiThread(() -> {
                 setUiBusy(false);
                 if (finalSuccess) {
@@ -819,7 +822,8 @@ public class MainActivity extends Activity {
                     appendLog("[INFO] Готовые исходники в: " + outputDir.getAbsolutePath());
                     Toast.makeText(MainActivity.this, "Декомпиляция завершена!", Toast.LENGTH_SHORT).show();
                 } else {
-                    appendLog("\n[FAIL] Ошибка декомпиляции. Проверьте лог выше.");
+                    appendLog("\n[FAIL] Ошибка декомпиляции (код " + finalResCode + "). Проверьте лог выше и /sdcard/rexglue_log.txt");
+                    Toast.makeText(MainActivity.this, "Ошибка декомпиляции (код " + finalResCode + ")", Toast.LENGTH_LONG).show();
                 }
             });
         });
@@ -911,6 +915,22 @@ public class MainActivity extends Activity {
                 scrollConsole.post(() -> scrollConsole.fullScroll(View.FOCUS_DOWN));
             }
             Log.i(TAG, message);
+        });
+
+        // Concurrently write to /sdcard/rexglue_log.txt
+        executor.execute(() -> {
+            try {
+                File logFile = new File("/sdcard/rexglue_log.txt");
+                if (!logFile.exists()) {
+                    File altLog = new File("/storage/emulated/0/rexglue_log.txt");
+                    if (altLog.getParentFile() != null && altLog.getParentFile().exists()) {
+                        logFile = altLog;
+                    }
+                }
+                try (FileWriter fw = new FileWriter(logFile, true)) {
+                    fw.write(message + "\n");
+                }
+            } catch (Throwable ignored) {}
         });
     }
 

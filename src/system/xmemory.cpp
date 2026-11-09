@@ -343,7 +343,9 @@ int Memory::MapViewsMac() {
   }
 
   uint8_t* mapping_base = reinterpret_cast<uint8_t*>(reserved_base);
-  uint64_t granularity_mask = ~uint64_t(system_allocation_granularity_ - 1);
+  size_t host_page = rex::memory::page_size();
+  size_t effective_granularity = std::max<size_t>(system_allocation_granularity_, host_page);
+  uint64_t granularity_mask = ~uint64_t(effective_granularity - 1);
 
   for (size_t n = 0; n < rex::countof(map_info); n++) {
     size_t view_size = static_cast<size_t>(map_info[n].virtual_address_end -
@@ -375,7 +377,9 @@ int Memory::MapViews(uint8_t* mapping_base) {
   assert_true(rex::countof(map_info) == rex::countof(views_.all_views));
   // 0xE0000000 4 KB offset is emulated via host_address_offset and on the CPU
   // side if system allocation granularity is bigger than 4 KB.
-  uint64_t granularity_mask = ~uint64_t(system_allocation_granularity_ - 1);
+  size_t host_page = rex::memory::page_size();
+  size_t effective_granularity = std::max<size_t>(system_allocation_granularity_, host_page);
+  uint64_t granularity_mask = ~uint64_t(effective_granularity - 1);
 #if REX_PLATFORM_ANDROID
   // The views are mapped with MAP_FIXED, which silently replaces whatever is already there. On a
   // desktop the low 64 GB are empty, but on Android the GPU driver, Scudo and ART map there, and

@@ -386,11 +386,14 @@ Result<void> ProjectRecompiler::Run(const ProjectRecompilerOptions& opts) {
     REXCODEGEN_TRACE("Analyzing '{}'...", entry.module->targetName);
     auto result = Analyze(entry.ctx, opts.reporter);
     if (!result) {
-      if (opts.force && result.error().category == ErrorCategory::Validation) {
-        REXLOG_WARN("Analysis errors for '{}' (continuing due to --force): {}",
-                    entry.module->targetName, result.error().message);
+      if (opts.force && (result.error().category == ErrorCategory::Validation ||
+                         result.error().category == ErrorCategory::Format)) {
+        REXLOG_WARN("Analysis errors for '{}' (continuing due to --force) [category {}]: {}",
+                    entry.module->targetName, static_cast<int>(result.error().category),
+                    result.error().message);
       } else {
-        REXLOG_ERROR("Analysis failed for '{}'", entry.module->targetName);
+        REXLOG_ERROR("Analysis failed for '{}' [category {}]: {}", entry.module->targetName,
+                     static_cast<int>(result.error().category), result.error().message);
         return result;
       }
     }
