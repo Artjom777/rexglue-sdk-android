@@ -116,15 +116,19 @@ jobs:
           echo "=== Building Standard Android ARM64 SDK and rexglue CLI ==="
           POCO=0 ./tools/android/build_sdk.sh all
 
-      - name: Build POCO X7 Pro ReXGlue Studio APK
+      - name: Build POCO X7 Pro ReXGlue Runner & Studio APKs
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_poco }}
         run: |
+          echo "=== Packaging Game Runner APK for POCO X7 Pro ==="
+          ./tools/android/build_apk.sh runner poco
           echo "=== Packaging ReXGlue Studio APK for POCO X7 Pro ==="
           ./tools/android/build_apk.sh studio poco
 
-      - name: Build Standard Android ARM64 ReXGlue Studio APK
+      - name: Build Standard Android ARM64 ReXGlue Runner & Studio APKs
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_standard }}
         run: |
+          echo "=== Packaging Standard Game Runner APK for Android ARM64 ==="
+          ./tools/android/build_apk.sh runner arm64
           echo "=== Packaging Standard ReXGlue Studio APK for Android ARM64 ==="
           ./tools/android/build_apk.sh studio arm64
 

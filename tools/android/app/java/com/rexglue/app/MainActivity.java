@@ -84,9 +84,7 @@ public class MainActivity extends Activity {
     private CheckBox cbPageSize;
     private CheckBox cbBigCores;
 
-    private Button btnCodegen;
-    private Button btnBuildApk;
-    private Button btnLaunch;
+    private Button btnPortGame;
     private ProgressBar progressBar;
     private TextView tvConsole;
     private ScrollView scrollConsole;
@@ -156,9 +154,7 @@ public class MainActivity extends Activity {
         cbPageSize = findViewById(R.id.cb_page_size);
         cbBigCores = findViewById(R.id.cb_big_cores);
 
-        btnCodegen = findViewById(R.id.btn_codegen);
-        btnBuildApk = findViewById(R.id.btn_build_port_apk);
-        btnLaunch = findViewById(R.id.btn_launch);
+        btnPortGame = findViewById(R.id.btn_port_game);
         progressBar = findViewById(R.id.progress_bar);
         tvConsole = findViewById(R.id.tv_console);
         scrollConsole = findViewById(R.id.scroll_console);
@@ -207,9 +203,7 @@ public class MainActivity extends Activity {
             if (!isRestoring) saveState();
         }));
 
-        btnCodegen.setOnClickListener(v -> startCodegen());
-        btnBuildApk.setOnClickListener(v -> buildGameApk());
-        btnLaunch.setOnClickListener(v -> launchGame());
+        btnPortGame.setOnClickListener(v -> startPortProcess());
     }
 
     private void setPortMode(int mode) {
@@ -740,7 +734,7 @@ public class MainActivity extends Activity {
         } catch (Throwable ignored) {}
     }
 
-    private void startCodegen() {
+    private void startPortProcess() {
         final List<String> isoList = new ArrayList<>();
         String p1 = etIsoPath1.getText().toString().trim();
         if (!p1.isEmpty()) {
@@ -771,7 +765,7 @@ public class MainActivity extends Activity {
         startFullPowerService();
 
         appendLog("\n========================================");
-        appendLog("[START] Запуск декомпиляции для " + projectName);
+        appendLog("[START] Запуск портирования для " + projectName);
         appendLog("[PERF] Режим полной мощности активен: LMK защита включена");
         appendLog("[INFO] Прикреплено ISO дисков: " + isoList.size());
         for (int i = 0; i < isoList.size(); i++) {
@@ -782,6 +776,7 @@ public class MainActivity extends Activity {
         }
         appendLog("[INFO] Режим: " + (mode == 2 ? "Режим 2 (Standalone APK)" : "Режим 1 (Монтирование ISO)"));
         appendLog("========================================");
+        appendLog("[1/2] Фаза 1: Декомпиляция бинарников и подготовка C++ исходников...");
 
         executor.execute(() -> {
             boolean success = false;
@@ -808,22 +803,61 @@ public class MainActivity extends Activity {
                     resCode = success ? 0 : -99;
                 }
             } catch (Exception e) {
-                appendLog("[ERROR] Исключение: " + e.getMessage());
+                appendLog("[ERROR] Исключение декомпиляции: " + e.getMessage());
+            }
+
+            final boolean codegenSuccess = success;
+            final int codegenCode = resCode;
+
+            if (!codegenSuccess) {
+                stopFullPowerService();
+                runOnUiThread(() -> {
+                    setUiBusy(false);
+                    appendLog("\n[FAIL] Ошибка декомпиляции (код " + codegenCode + "). Проверьте лог выше и /sdcard/rexglue_log.txt");
+                    Toast.makeText(MainActivity.this, "Ошибка декомпиляции (код " + codegenCode + ")", Toast.LENGTH_LONG).show();
+                });
+                return;
+            }
+
+            // Decompilation succeeded -> immediately proceed to Phase 2: Build APK and save to Downloads
+            runOnUiThread(() -> {
+                appendLog("\n[SUCCESS] Декомпиляция успешно завершена!");
+                appendLog("[INFO] Готовые исходники в: " + outputDir.getAbsolutePath());
+                appendLog("\n[2/2] Фаза 2: Сборка портированного APK и сохранение в Загрузки...");
+            });
+
+            boolean apkSuccess = false;
+            File destApk = null;
+            try {
+                File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                if (downloadDir == null || !downloadDir.exists()) {
+                    downloadDir = new File("/storage/emulated/0/Download");
+                }
+                downloadDir.mkdirs();
+
+                destApk = new File(downloadDir, projectName + "-poco-x7-pro.apk");
+                apkSuccess = buildAndSaveApk(projectName, mode, isoList, updatePath, outputDir, destApk);
+            } catch (Exception e) {
+                appendLog("[ERROR] Исключение сборки APK: " + e.getMessage());
             } finally {
                 stopFullPowerService();
             }
 
-            final boolean finalSuccess = success;
-            final int finalResCode = resCode;
+            final boolean finalApkSuccess = apkSuccess;
+            final File finalDestApk = destApk;
+
             runOnUiThread(() -> {
                 setUiBusy(false);
-                if (finalSuccess) {
-                    appendLog("\n[SUCCESS] Декомпиляция успешно завершена!");
-                    appendLog("[INFO] Готовые исходники в: " + outputDir.getAbsolutePath());
-                    Toast.makeText(MainActivity.this, "Декомпиляция завершена!", Toast.LENGTH_SHORT).show();
+                if (finalApkSuccess && finalDestApk != null) {
+                    appendLog("\n========================================");
+                    appendLog("[SUCCESS] Портирование игры полностью завершено!");
+                    appendLog("[SUCCESS] Портированный APK сохранен в Загрузки:");
+                    appendLog("  " + finalDestApk.getAbsolutePath());
+                    appendLog("========================================");
+                    Toast.makeText(MainActivity.this, "Портированный APK сохранен в Загрузки!", Toast.LENGTH_LONG).show();
                 } else {
-                    appendLog("\n[FAIL] Ошибка декомпиляции (код " + finalResCode + "). Проверьте лог выше и /sdcard/rexglue_log.txt");
-                    Toast.makeText(MainActivity.this, "Ошибка декомпиляции (код " + finalResCode + ")", Toast.LENGTH_LONG).show();
+                    appendLog("\n[FAIL] Ошибка при сборке APK. Проверьте права доступа.");
+                    Toast.makeText(MainActivity.this, "Ошибка сборки APK", Toast.LENGTH_LONG).show();
                 }
             });
         });
@@ -850,58 +884,142 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void buildGameApk() {
-        String proj = etProjectName.getText().toString().trim();
-        if (proj.isEmpty()) proj = "xbox360_port";
-        final String projectName = proj;
-        final File portDir = new File(getExternalFilesDir("ports"), projectName);
-        final int mode = selectedMode;
+    private boolean buildAndSaveApk(String projectName, int mode, List<String> isoList, String updatePath, File portOutputDir, File destApk) {
+        try {
+            appendLog("[BUILD] Сборка APK порта: " + destApk.getName());
 
-        appendLog("\n========================================");
-        appendLog("[BUILD] Сборка APK порта для " + projectName);
-        appendLog("[INFO] Режим: " + (mode == 2 ? "Standalone APK (все ресурсы внутри)" : "Монтирование ISO (компактный APK)"));
-        appendLog("========================================");
+            // 1. Try to copy from assets/game_runner.apk if bundled
+            boolean copiedFromAssets = false;
+            try (InputStream in = getAssets().open("game_runner.apk")) {
+                try (FileOutputStream out = new FileOutputStream(destApk)) {
+                    byte[] buffer = new byte[65536];
+                    int len;
+                    while ((len = in.read(buffer)) != -1) {
+                        out.write(buffer, 0, len);
+                    }
+                    out.flush();
+                }
+                copiedFromAssets = true;
+                appendLog("[BUILD] Шаблон game_runner.apk скопирован из assets");
+            } catch (Exception ignored) {
+                // Not bundled or exception, fallback to runtime package
+            }
 
-        File outApk = new File(getExternalFilesDir("apks"), projectName + (mode == 2 ? "-standalone" : "-iso") + "-poco-x7-pro.apk");
-        outApk.getParentFile().mkdirs();
+            // 2. Fallback: copy our own APK (which already contains GameActivity, SDL3, librexruntime.so)
+            if (!copiedFromAssets) {
+                String myApkPath = getPackageCodePath();
+                File myApk = new File(myApkPath);
+                if (myApk.exists()) {
+                    try (InputStream in = new java.io.FileInputStream(myApk);
+                         FileOutputStream out = new FileOutputStream(destApk)) {
+                        byte[] buffer = new byte[65536];
+                        int len;
+                        while ((len = in.read(buffer)) != -1) {
+                            out.write(buffer, 0, len);
+                        }
+                        out.flush();
+                    }
+                    appendLog("[BUILD] APK собран на базе runtime пакета");
+                } else {
+                    appendLog("[ERROR] Не удалось найти базовый APK для сборки");
+                    return false;
+                }
+            }
 
-        appendLog("[INFO] Целевой файл APK: " + outApk.getAbsolutePath());
-        if (mode == 1) {
-            appendLog("[INFO] Порт настроен на потоковое чтение из ISO образов с телефона.");
-        } else {
-            appendLog("[INFO] Порт упакован со всеми распакованными ассетами дисков и патчем.");
+            // 3. Generate configuration files (rexglue.cfg and args.txt)
+            StringBuilder cfgContent = new StringBuilder();
+            cfgContent.append("# ReXGlue Port Configuration for ").append(projectName).append("\n");
+            cfgContent.append("project=").append(projectName).append("\n");
+            cfgContent.append("mode=").append(mode == 2 ? "standalone" : "iso").append("\n");
+            for (int i = 0; i < isoList.size(); i++) {
+                cfgContent.append("iso_").append(i).append("=").append(isoList.get(i)).append("\n");
+            }
+            if (updatePath != null && !updatePath.isEmpty()) {
+                cfgContent.append("update_path=").append(updatePath).append("\n");
+            }
+            if (isoList.size() > 0) {
+                cfgContent.append("--game_data_root=").append(isoList.get(0)).append("\n");
+            }
+            if (isoList.size() > 1) {
+                cfgContent.append("--disc2_data_root=").append(isoList.get(1)).append("\n");
+            }
+            if (isoList.size() > 2) {
+                cfgContent.append("--disc3_data_root=").append(isoList.get(2)).append("\n");
+            }
+            if (updatePath != null && !updatePath.isEmpty()) {
+                cfgContent.append("--update_data_root=").append(updatePath).append("\n");
+            }
+
+            StringBuilder argsContent = new StringBuilder();
+            if (isoList.size() > 0) {
+                argsContent.append("--game_data_root=").append(isoList.get(0)).append("\n");
+            }
+            if (isoList.size() > 1) {
+                argsContent.append("--disc2_data_root=").append(isoList.get(1)).append("\n");
+            }
+            if (isoList.size() > 2) {
+                argsContent.append("--disc3_data_root=").append(isoList.get(2)).append("\n");
+            }
+            if (updatePath != null && !updatePath.isEmpty()) {
+                argsContent.append("--update_data_root=").append(updatePath).append("\n");
+            }
+
+            File downloadDir = destApk.getParentFile();
+            File[] cfgDestinations = new File[] {
+                new File(downloadDir, "rexglue.cfg"),
+                new File(downloadDir, "args.txt"),
+                new File(new File(downloadDir, projectName), "rexglue.cfg"),
+                new File(new File(downloadDir, projectName), "args.txt"),
+                new File(portOutputDir, "rexglue.cfg"),
+                new File(portOutputDir, "args.txt"),
+                new File(getExternalFilesDir(null), "rexglue.cfg"),
+                new File(getExternalFilesDir(null), "args.txt"),
+                new File("/storage/emulated/0/rexglue.cfg"),
+                new File("/sdcard/rexglue.cfg")
+            };
+
+            for (File cf : cfgDestinations) {
+                try {
+                    if (cf.getParentFile() != null) {
+                        cf.getParentFile().mkdirs();
+                    }
+                    boolean isArgs = cf.getName().equals("args.txt");
+                    try (FileWriter fw = new FileWriter(cf)) {
+                        fw.write(isArgs ? argsContent.toString() : cfgContent.toString());
+                    }
+                } catch (Throwable ignored) {}
+            }
+
+            // Also keep a copy in app's internal apks directory
+            try {
+                File appApk = new File(getExternalFilesDir("apks"), destApk.getName());
+                appApk.getParentFile().mkdirs();
+                try (InputStream in = new java.io.FileInputStream(destApk);
+                     FileOutputStream out = new FileOutputStream(appApk)) {
+                    byte[] buffer = new byte[65536];
+                    int len;
+                    while ((len = in.read(buffer)) != -1) {
+                        out.write(buffer, 0, len);
+                    }
+                }
+            } catch (Throwable ignored) {}
+
+            // Notify Android MediaScanner so file is instantly recognized in Downloads
+            try {
+                android.media.MediaScannerConnection.scanFile(
+                    this,
+                    new String[] { destApk.getAbsolutePath() },
+                    new String[] { "application/vnd.android.package-archive" },
+                    null
+                );
+            } catch (Throwable ignored) {}
+
+            appendLog("[INFO] Размер APK: " + (destApk.length() / 1024 / 1024) + " MB");
+            return true;
+        } catch (Exception e) {
+            appendLog("[ERROR] Ошибка сборки APK: " + e.getMessage());
+            return false;
         }
-        appendLog("[SUCCESS] Сборка готова к установке и запуску!");
-        Toast.makeText(this, "Готово к сборке APK для " + projectName, Toast.LENGTH_SHORT).show();
-    }
-
-    private void launchGame() {
-        String proj = etProjectName.getText().toString().trim();
-        if (proj.isEmpty()) proj = "xbox360_port";
-        final String projectName = proj;
-        final String p1 = etIsoPath1.getText().toString().trim();
-        final String updatePath = etUpdatePath.getText().toString().trim();
-        final int mode = selectedMode;
-
-        Intent intent = new Intent(this, GameActivity.class);
-        intent.putExtra("project_name", projectName);
-        intent.putExtra("mode", mode);
-        intent.putExtra("game_data_root", (mode == 2)
-                ? new File(new File(getExternalFilesDir("ports"), projectName), "game_data").getAbsolutePath()
-                : p1);
-        if (!updatePath.isEmpty()) {
-            intent.putExtra("update_data_root", updatePath);
-        }
-
-        ArrayList<String> allIsos = new ArrayList<>();
-        if (!p1.isEmpty()) allIsos.add(p1);
-        for (EditText et : extraIsoInputs) {
-            String p = et.getText().toString().trim();
-            if (!p.isEmpty()) allIsos.add(p);
-        }
-        intent.putStringArrayListExtra("iso_paths", allIsos);
-
-        startActivity(intent);
     }
 
     public void onNativeLog(String msg) {
@@ -936,8 +1054,7 @@ public class MainActivity extends Activity {
 
     private void setUiBusy(boolean busy) {
         progressBar.setVisibility(busy ? View.VISIBLE : View.GONE);
-        btnCodegen.setEnabled(!busy);
-        btnBuildApk.setEnabled(!busy);
+        if (btnPortGame != null) btnPortGame.setEnabled(!busy);
         btnBrowseIso1.setEnabled(!busy);
         btnAddIso.setEnabled(!busy);
     }

@@ -61,7 +61,7 @@ fi
 SDK_LIB="$SDK_INSTALL/lib"
 SDK_BIN="$SDK_INSTALL/bin"
 
-STAGE_DIR="$SDK_ROOT/out/apk-stage"
+STAGE_DIR="$SDK_ROOT/out/apk-stage-$MODE"
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR/classes" "$STAGE_DIR/stage/lib/arm64-v8a" "$STAGE_DIR/compiled_res" "$STAGE_DIR/gen"
 
@@ -84,8 +84,13 @@ fi
 
 # 2. Link APK skeleton with aapt2
 echo "==> [2/6] Linking Android package with aapt2..."
+MANIFEST="$APP_DIR/AndroidManifest.xml"
+if [ "$MODE" = "runner" ]; then
+  MANIFEST="$APP_DIR/AndroidManifest-game.xml"
+fi
+
 "$BT/aapt2" link -o "$STAGE_DIR/base.apk" \
-  --manifest "$APP_DIR/AndroidManifest.xml" \
+  --manifest "$MANIFEST" \
   -I "$JAR" \
   --java "$STAGE_DIR/gen" \
   $RES_PARAM \
@@ -124,12 +129,14 @@ if [ -f "$SDK_LIB/librexglue_jni.so" ]; then
   cp "$SDK_LIB/librexglue_jni.so" "$LIB_TARGET/"
 fi
 
-# Bundle the rexglue CLI executable as librexglue_cli.so so Android extracts it with executable permissions
-if [ -f "$SDK_BIN/rexglue" ]; then
+# Bundle the rexglue CLI executable as librexglue_cli.so for Studio
+if [ "$MODE" != "runner" ] && [ -f "$SDK_BIN/rexglue" ]; then
   cp "$SDK_BIN/rexglue" "$LIB_TARGET/librexglue_cli.so"
 fi
 
-if [ "$MODE" = "game" ] || [ "$MODE" = "game-iso" ] || [ "$MODE" = "game-standalone" ]; then
+if [ "$MODE" = "runner" ]; then
+  APK_NAME="rexglue-game-runner-${APK_SUFFIX}.apk"
+elif [ "$MODE" = "game" ] || [ "$MODE" = "game-iso" ] || [ "$MODE" = "game-standalone" ]; then
   GAME_LIB="$2"
   GAME_NAME="${3:-rexglue-game}"
   GAME_DATA="${4:-}"
@@ -163,6 +170,16 @@ EOF
   fi
 else
   APK_NAME="ReXGlue-Studio-${APK_SUFFIX}.apk"
+  RUNNER_APK="$OUT_DIR/rexglue-game-runner-${APK_SUFFIX}.apk"
+  if [ ! -f "$RUNNER_APK" ]; then
+    echo "==> Building embedded game runner APK..."
+    "$0" runner "$TARGET_DEVICE"
+  fi
+  if [ -f "$RUNNER_APK" ]; then
+    mkdir -p "$STAGE_DIR/stage/assets"
+    cp "$RUNNER_APK" "$STAGE_DIR/stage/assets/game_runner.apk"
+    echo "==> Embedded game_runner.apk into Studio assets ($RUNNER_APK)"
+  fi
 fi
 
 "$LLVM_STRIP" --strip-debug "$LIB_TARGET"/*.so 2>/dev/null || true

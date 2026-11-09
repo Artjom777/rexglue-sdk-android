@@ -26,6 +26,22 @@ public class GameActivity extends SDLActivity {
             Log.e(TAG, "Uncaught exception in " + thread.getName(), throwable);
         });
 
+        // Request storage permissions if not granted
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            if (!android.os.Environment.isExternalStorageManager()) {
+                try {
+                    android.content.Intent intent = new android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                    intent.setData(android.net.Uri.parse("package:" + getPackageName()));
+                    startActivity(intent);
+                } catch (Exception e) {
+                    try {
+                        android.content.Intent intent = new android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                        startActivity(intent);
+                    } catch (Exception ignored) {}
+                }
+            }
+        }
+
         // Keep screen on during gameplay
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         super.onCreate(savedInstanceState);
@@ -60,33 +76,56 @@ public class GameActivity extends SDLActivity {
             return args.toArray(new String[0]);
         }
 
-        // 2. Check args.txt or rexglue.cfg in app storage
-        File[] candidateConfigFiles = new File[] {
-            new File(getExternalFilesDir(null), "args.txt"),
-            new File(getFilesDir(), "args.txt"),
-            new File(getExternalFilesDir(null), "rexglue.cfg"),
-            new File(getFilesDir(), "rexglue.cfg")
-        };
+        // 2. Check candidate config files in Download, app data, and sdcard
+        File downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
+        ArrayList<File> candidateConfigFiles = new ArrayList<>();
+        if (downloadDir != null && downloadDir.exists()) {
+            candidateConfigFiles.add(new File(downloadDir, "rexglue.cfg"));
+            candidateConfigFiles.add(new File(downloadDir, "args.txt"));
+            File[] subs = downloadDir.listFiles(File::isDirectory);
+            if (subs != null) {
+                for (File sub : subs) {
+                    candidateConfigFiles.add(new File(sub, "rexglue.cfg"));
+                    candidateConfigFiles.add(new File(sub, "args.txt"));
+                }
+            }
+        }
+
+        candidateConfigFiles.add(new File(getExternalFilesDir(null), "rexglue.cfg"));
+        candidateConfigFiles.add(new File(getExternalFilesDir(null), "args.txt"));
+        candidateConfigFiles.add(new File(getFilesDir(), "rexglue.cfg"));
+        candidateConfigFiles.add(new File(getFilesDir(), "args.txt"));
+        candidateConfigFiles.add(new File("/storage/emulated/0/Download/rexglue.cfg"));
+        candidateConfigFiles.add(new File("/storage/emulated/0/Download/args.txt"));
+        candidateConfigFiles.add(new File("/storage/emulated/0/rexglue.cfg"));
+        candidateConfigFiles.add(new File("/sdcard/rexglue.cfg"));
+        candidateConfigFiles.add(new File("/storage/emulated/0/Android/data/com.rexglue.app/files/rexglue.cfg"));
+        candidateConfigFiles.add(new File("/storage/emulated/0/Android/data/com.rexglue.app/files/args.txt"));
 
         for (File cfg : candidateConfigFiles) {
-            if (cfg.exists()) {
+            if (cfg != null && cfg.exists() && cfg.isFile()) {
                 try (BufferedReader reader = new BufferedReader(new FileReader(cfg))) {
                     String line;
                     while ((line = reader.readLine()) != null) {
                         line = line.trim();
                         if (line.isEmpty() || line.startsWith("#")) continue;
                         if (line.startsWith("--")) {
-                            args.add(line);
+                            if (!args.contains(line)) args.add(line);
                         } else if (line.startsWith("iso_0=")) {
-                            args.add("--game_data_root=" + line.substring("iso_0=".length()).trim());
+                            String v = "--game_data_root=" + line.substring("iso_0=".length()).trim();
+                            if (!args.contains(v)) args.add(v);
                         } else if (line.startsWith("iso_path=")) {
-                            args.add("--game_data_root=" + line.substring("iso_path=".length()).trim());
+                            String v = "--game_data_root=" + line.substring("iso_path=".length()).trim();
+                            if (!args.contains(v)) args.add(v);
                         } else if (line.startsWith("iso_1=")) {
-                            args.add("--disc2_data_root=" + line.substring("iso_1=".length()).trim());
+                            String v = "--disc2_data_root=" + line.substring("iso_1=".length()).trim();
+                            if (!args.contains(v)) args.add(v);
                         } else if (line.startsWith("iso_2=")) {
-                            args.add("--disc3_data_root=" + line.substring("iso_2=".length()).trim());
+                            String v = "--disc3_data_root=" + line.substring("iso_2=".length()).trim();
+                            if (!args.contains(v)) args.add(v);
                         } else if (line.startsWith("update_path=")) {
-                            args.add("--update_data_root=" + line.substring("update_path=".length()).trim());
+                            String v = "--update_data_root=" + line.substring("update_path=".length()).trim();
+                            if (!args.contains(v)) args.add(v);
                         }
                     }
                 } catch (Exception ignored) {}

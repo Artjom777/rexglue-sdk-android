@@ -302,40 +302,15 @@
                 android:buttonTint="#ADC6FF" />
         </LinearLayout>
 
-        <!-- Big Action Buttons (exact 1:1 colors and shapes from screenshot) -->
-        <!-- 1. Декомпиляция -->
+        <!-- Big Action Button: Портировать игру (Декомпиляция + Сборка APK) -->
         <Button
-            android:id="@+id/btn_codegen"
+            android:id="@+id/btn_port_game"
             android:layout_width="match_parent"
             android:layout_height="54dp"
             android:layout_marginTop="16dp"
             android:background="@drawable/bg_button_blue"
-            android:text="Декомпиляция"
+            android:text="Портировать игру"
             android:textColor="#0F1C3A"
-            android:textSize="17sp"
-            android:textStyle="bold" />
-
-        <!-- 2. Собрать APK -->
-        <Button
-            android:id="@+id/btn_build_port_apk"
-            android:layout_width="match_parent"
-            android:layout_height="54dp"
-            android:layout_marginTop="10dp"
-            android:background="@drawable/bg_button_purple"
-            android:text="Собрать APK"
-            android:textColor="#280D46"
-            android:textSize="17sp"
-            android:textStyle="bold" />
-
-        <!-- 3. Запустить игру -->
-        <Button
-            android:id="@+id/btn_launch"
-            android:layout_width="match_parent"
-            android:layout_height="54dp"
-            android:layout_marginTop="10dp"
-            android:background="@drawable/bg_button_green"
-            android:text="Запустить игру"
-            android:textColor="#0C3612"
             android:textSize="17sp"
             android:textStyle="bold" />
 
